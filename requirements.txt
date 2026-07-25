@@ -1,0 +1,5 @@
+groq==1.0.0
+keyboard==0.13.5
+opencc-python-reimplemented==0.1.7
+PyAudio==0.2.14
+pyperclip==1.11.0
