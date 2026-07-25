@@ -15,18 +15,23 @@
 
 ## 使用 Release 版
 
-1. 從 GitHub Releases 下載並解壓縮。
-2. 執行 `AZA-STT.exe`。
-3. 第一次啟動會自動顯示設定視窗；若尚未申請，可按
-   **開啟 Groq API Keys** 前往 <https://console.groq.com/keys>。
-4. 貼上自己的 Groq API key 並按下 **儲存**。
-5. 雙擊 Menu 鍵開始錄音，再按一次停止。
+1. 從 [GitHub Releases](https://github.com/ReaperTw/AZA-STT/releases/latest) 下載最新版 ZIP 並解壓縮。
+2. 雙擊 `AZA-STT.exe`。
+3. 第一次啟動會自動跳出 API key 設定視窗。
+4. 若還沒有 Groq API key，可直接按視窗裡的 **開啟 Groq API Keys**；申請完成後貼上 key，再按 **儲存**。設定視窗關閉後，AZA-STT 會繼續啟動。
+5. 將游標放在想輸入文字的位置，雙擊 Menu 鍵開始錄音，再按一次 Menu 鍵停止；辨識完成後會自動貼上文字。
 
-日後若要更換 API key，執行 `Configure-AZA-STT.cmd` 即可重新開啟設定視窗；
-儲存後請重新啟動 AZA-STT。
+一般使用者不需要複製、改名或手動編輯任何設定檔。日後若要更換 API key，
+雙擊 `Configure-AZA-STT.cmd` 即可再次開啟相同的設定視窗；儲存後重新啟動
+AZA-STT。
+
+<details>
+<summary>進階 API key 設定</summary>
 
 進階用戶也可以設定 `GROQ_API_KEYS` 環境變數，或在 EXE 旁放置
-`dictate_settings.conf`；多組 key 可用逗號、分號、空格或換行分隔。
+`dictate_settings.conf`。多組 key 可用逗號、分號、空格或換行分隔。
+
+</details>
 
 若要開機自動啟動，請在 PowerShell 執行：
 
@@ -42,11 +47,11 @@ powershell -ExecutionPolicy Bypass -File .\Uninstall-Startup.ps1
 
 ## 從原始碼執行
 
-需要 Windows、Python 3.10、麥克風，以及 Groq API key。
+需要 Windows、Python 3.10 及麥克風。第一次執行原始碼時，也會自動跳出
+API key 設定視窗。
 
 ```powershell
 python -m pip install -r requirements.txt
-Copy-Item .\dictate_settings.example.conf .\dictate_settings.conf
 python .\groq_dictate.py
 ```
 
