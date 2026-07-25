@@ -9,6 +9,7 @@ from groq_dictate import (
     GROQ_KEYS_URL,
     MAX_SENTENCE_CHARACTERS,
     compress_to_flac,
+    create_tray_image,
     normalize_transcription,
     open_groq_keys_page,
     parse_api_keys,
@@ -163,6 +164,17 @@ class ApiKeyConfigurationTests(unittest.TestCase):
     def test_opens_official_groq_keys_page(self, open_new_tab):
         self.assertTrue(open_groq_keys_page())
         open_new_tab.assert_called_once_with(GROQ_KEYS_URL)
+
+
+class TrayIconTests(unittest.TestCase):
+    def test_creates_a_valid_rgba_icon_for_each_status(self):
+        for status in ("idle", "recording", "processing", "success", "error"):
+            with self.subTest(status=status):
+                image = create_tray_image(status=status, size=64)
+                self.assertIsNotNone(image)
+                self.assertEqual(image.mode, "RGBA")
+                self.assertEqual(image.size, (64, 64))
+                self.assertIsNotNone(image.getbbox())
 
 
 if __name__ == "__main__":

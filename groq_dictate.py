@@ -13,6 +13,7 @@ import subprocess
 import re
 import ctypes
 import logging
+import queue
 import webbrowser
 from logging.handlers import RotatingFileHandler
 
@@ -25,6 +26,14 @@ try:
     import winreg
 except ImportError:
     winreg = None
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except ImportError:
+    pystray = None
+    Image = None
+    ImageDraw = None
 
 import keyboard
 import pyaudio
@@ -624,8 +633,7 @@ def prompt_for_api_keys(parent=None):
 
         messagebox.showinfo(
             "AZA-STT",
-            "Groq API key 已儲存。\n"
-            "若 AZA-STT 已在執行，請重新啟動後使用新 key。",
+            "Groq API key 已儲存。",
             parent=dialog_parent,
         )
         return keys
@@ -659,6 +667,104 @@ def release_single_instance(handle):
         kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
         kernel32.CloseHandle.restype = ctypes.c_bool
         kernel32.CloseHandle(handle)
+
+
+def create_tray_image(status="idle", size=64):
+    """Create a compact AZA-STT microphone icon for the Windows notification area."""
+    if Image is None or ImageDraw is None:
+        return None
+
+    colors = {
+        "idle": "#2563EB",
+        "recording": "#EF4444",
+        "processing": "#F59E0B",
+        "success": "#22C55E",
+        "error": "#6B7280",
+    }
+    accent = colors.get(status, colors["idle"])
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    margin = max(2, size // 16)
+    radius = max(6, size // 5)
+    draw.rounded_rectangle(
+        (margin, margin, size - margin - 1, size - margin - 1),
+        radius=radius,
+        fill="#111827",
+        outline=accent,
+        width=max(2, size // 16),
+    )
+
+    # A font-free microphone mark stays sharp even at 16x16 tray size.
+    mic_left = int(size * 0.38)
+    mic_top = int(size * 0.22)
+    mic_right = int(size * 0.62)
+    mic_bottom = int(size * 0.58)
+    stroke = max(2, size // 16)
+    draw.rounded_rectangle(
+        (mic_left, mic_top, mic_right, mic_bottom),
+        radius=max(3, size // 10),
+        fill=accent,
+    )
+    draw.arc(
+        (int(size * 0.29), int(size * 0.34), int(size * 0.71), int(size * 0.72)),
+        start=0,
+        end=180,
+        fill="white",
+        width=stroke,
+    )
+    draw.line(
+        (size // 2, int(size * 0.70), size // 2, int(size * 0.80)),
+        fill="white",
+        width=stroke,
+    )
+    draw.line(
+        (int(size * 0.39), int(size * 0.81), int(size * 0.61), int(size * 0.81)),
+        fill="white",
+        width=stroke,
+    )
+    return image
+
+
+def run_tray_self_test(timeout_seconds=5):
+    """Exercise the packaged Windows notification-area backend without starting the app."""
+    if pystray is None:
+        log_info("Tray self-test failed: pystray or Pillow is unavailable.")
+        return False
+
+    ready = Event()
+    icon = pystray.Icon(
+        "AZA-STT Self Test",
+        create_tray_image(),
+        "AZA-STT notification area self-test",
+        pystray.Menu(pystray.MenuItem("測試中", lambda *_: None)),
+    )
+
+    def mark_ready(active_icon):
+        active_icon.visible = True
+        ready.set()
+
+    tray_thread = threading.Thread(
+        target=lambda: icon.run(setup=mark_ready),
+        name="AZA-STT Tray Self Test",
+        daemon=True,
+    )
+    tray_thread.start()
+    if not ready.wait(timeout_seconds):
+        icon.stop()
+        log_info("Tray self-test failed: notification area icon did not become ready.")
+        return False
+
+    try:
+        icon.icon = create_tray_image("recording")
+        icon.update_menu()
+    finally:
+        icon.stop()
+        tray_thread.join(timeout=timeout_seconds)
+
+    passed = not tray_thread.is_alive()
+    log_info(f"Tray self-test {'passed' if passed else 'failed'}.")
+    return passed
+
 
 class GroqDictateApp:
     def __init__(self, instance_handle=None):
@@ -694,9 +800,15 @@ class GroqDictateApp:
         self.last_press_time = 0
         self.double_press_threshold = 0.4  # Double click interval (seconds)
 
-        self.setup_gui()
-
         self.stop_event = Event()
+        self.ui_actions = queue.Queue()
+        self.tray_icon = None
+        self.tray_thread = None
+        self.is_quitting = False
+
+        self.setup_gui()
+        self.setup_tray_icon()
+
         self.listen_thread = threading.Thread(target=self.pynput_listen_loop, daemon=True)
         self.listen_thread.start()
 
@@ -985,13 +1097,144 @@ class GroqDictateApp:
         self.hide_timer_id = None
 
         self.popup_menu = tk.Menu(self.root, tearoff=0)
-        self.popup_menu.add_command(label="Exit", command=self.quit_app)
+        self.popup_menu.add_command(label="退出 AZA-STT", command=self.quit_app)
         self.canvas.bind("<Button-3>", self.show_popup_menu)
 
         self.root.withdraw()
+        self.root.after(100, self.process_ui_actions)
 
         self.root.after(100, lambda: print("=== Program started and modules loaded successfully ==="))
         self.root.after(100, lambda: print(f"🚀 Groq voice ball started! (Double press {RECORD_KEY.upper()} to record)"))
+
+    def setup_tray_icon(self):
+        if pystray is None:
+            log_info("pystray or Pillow is unavailable; notification area icon was not started.")
+            return
+
+        menu = pystray.Menu(
+            pystray.MenuItem(
+                lambda item: self.tray_status_text(),
+                self.enqueue_status_dialog,
+                default=True,
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("重新輸入 Groq API key", self.enqueue_api_key_setup),
+            pystray.MenuItem("開啟 Groq API Keys 網頁", self.enqueue_open_keys_page),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("退出 AZA-STT", self.enqueue_quit),
+        )
+        self.tray_icon = pystray.Icon(
+            "AZA-STT",
+            create_tray_image(),
+            "AZA-STT - 背景執行中",
+            menu,
+        )
+        self.tray_thread = threading.Thread(
+            target=self.run_tray_icon,
+            name="AZA-STT Tray",
+            daemon=True,
+        )
+        self.tray_thread.start()
+
+    def run_tray_icon(self):
+        try:
+            self.tray_icon.run(setup=self.on_tray_ready)
+        except Exception as error:
+            log_info(f"Notification area icon failed: {error}")
+
+    def on_tray_ready(self, icon):
+        icon.visible = True
+        try:
+            icon.notify(
+                "AZA-STT 已縮到 Windows 右下角通知區。\n"
+                f"連按兩下 {RECORD_KEY.upper()} 開始或停止錄音。",
+                "AZA-STT 正在背景執行",
+            )
+        except Exception as error:
+            log_info(f"Startup tray notification failed: {error}")
+
+    def tray_status_text(self):
+        if self.is_recording:
+            return "AZA-STT - 錄音中"
+        if self.is_processing_ui:
+            return "AZA-STT - 辨識中"
+        return "AZA-STT - 背景執行中"
+
+    def enqueue_ui_action(self, action):
+        if not self.is_quitting:
+            self.ui_actions.put(action)
+
+    def enqueue_status_dialog(self, icon=None, item=None):
+        self.enqueue_ui_action(self.show_status_dialog)
+
+    def enqueue_api_key_setup(self, icon=None, item=None):
+        self.enqueue_ui_action(self.configure_api_keys)
+
+    def enqueue_open_keys_page(self, icon=None, item=None):
+        self.enqueue_ui_action(self.open_keys_page_from_tray)
+
+    def enqueue_quit(self, icon=None, item=None):
+        self.enqueue_ui_action(self.quit_app)
+
+    def process_ui_actions(self):
+        if self.is_quitting:
+            return
+        try:
+            while True:
+                action = self.ui_actions.get_nowait()
+                action()
+                if self.is_quitting:
+                    return
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_ui_actions)
+
+    def show_status_dialog(self):
+        status = self.tray_status_text()
+        messagebox.showinfo(
+            "AZA-STT",
+            f"{status}\n\n"
+            f"連按兩下 {RECORD_KEY.upper()} 開始錄音,再按一次停止並轉成文字。\n"
+            "程式關閉錄音提示後仍會留在 Windows 右下角通知區。\n\n"
+            "若要完整關閉,請在 AZA-STT 圖示按右鍵,選擇「退出 AZA-STT」。",
+            parent=self.root,
+        )
+
+    def configure_api_keys(self):
+        if self.is_recording or self.is_processing_ui:
+            messagebox.showwarning(
+                "AZA-STT",
+                "請先完成目前的錄音或語音辨識,再更換 API key。",
+                parent=self.root,
+            )
+            return
+
+        keys = prompt_for_api_keys(parent=self.root)
+        if not keys:
+            return
+        self.api_keys = keys
+        self.current_key_index = 0
+        self.current_model_index = 0
+        self.client = Groq(api_key=keys[0], timeout=API_TIMEOUT_SECONDS)
+        log_info("Groq API keys updated from the notification area menu.")
+
+    def open_keys_page_from_tray(self):
+        if not open_groq_keys_page():
+            messagebox.showerror(
+                "AZA-STT",
+                f"無法開啟瀏覽器。\n\n{GROQ_KEYS_URL}",
+                parent=self.root,
+            )
+
+    def set_tray_status(self, status):
+        if not self.tray_icon:
+            return
+        try:
+            self.tray_icon.icon = create_tray_image(status)
+            self.tray_icon.title = self.tray_status_text()
+            self.tray_icon.update_menu()
+        except Exception as error:
+            log_info(f"Failed to update notification area status: {error}")
 
     def cancel_hide_timer(self):
         if self.hide_timer_id is not None:
@@ -1002,6 +1245,7 @@ class GroqDictateApp:
         self.cancel_hide_timer()
         self.is_processing_ui = False
         self.root.withdraw()
+        self.set_tray_status("idle")
 
     def set_ui_recording(self):
         self.cancel_hide_timer()
@@ -1009,17 +1253,20 @@ class GroqDictateApp:
         self.root.deiconify()
         self.canvas.itemconfig(self.sphere, fill='#ff1a1a', outline='#4d0000', width=2)
         self.canvas.config(cursor="hand2")
+        self.set_tray_status("recording")
 
     def set_ui_processing(self):
         self.cancel_hide_timer()
         self.is_processing_ui = True
         self.canvas.itemconfig(self.sphere, fill='#FF851B', outline='#B35900', width=2)
         self.canvas.config(cursor="watch")
+        self.set_tray_status("processing")
 
     def set_ui_success(self):
         self.cancel_hide_timer()
         self.is_processing_ui = False
         self.canvas.itemconfig(self.sphere, fill='#2ECC40', outline='#145A32', width=2)
+        self.set_tray_status("success")
         self.hide_timer_id = self.root.after(1000, self.set_ui_idle)
 
     def set_ui_error(self, message):
@@ -1028,6 +1275,7 @@ class GroqDictateApp:
         self.canvas.itemconfig(self.sphere, fill='#666666', outline='#333333', width=2)
         self.canvas.config(cursor="x_cursor")
         print(f"❌ Error: {message}")
+        self.set_tray_status("error")
         self.hide_timer_id = self.root.after(3000, self.set_ui_idle)
 
     def show_popup_menu(self, event):
@@ -1035,9 +1283,17 @@ class GroqDictateApp:
             self.popup_menu.post(event.x_root, event.y_root)
 
     def quit_app(self):
+        if self.is_quitting:
+            return
+        self.is_quitting = True
         self.stop_event.set()
         self.cancel_hide_timer()
         self.is_recording = False
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception as e:
+                log_info(f"Notification area shutdown failed: {e}")
         try:
             self.p.terminate()
         except Exception as e:
@@ -1047,13 +1303,15 @@ class GroqDictateApp:
             self.instance_handle = None
         self.root.quit()
         self.root.destroy()
-        sys.exit(0)
 
     def run(self):
         self.set_ui_idle()
         self.root.mainloop()
 
 if __name__ == "__main__":
+    if "--self-test-tray" in sys.argv:
+        sys.exit(0 if run_tray_self_test() else 1)
+
     if "--self-test-flac" in sys.argv:
         sys.exit(0 if run_flac_self_test() else 1)
 
@@ -1064,6 +1322,14 @@ if __name__ == "__main__":
     instance_handle = acquire_single_instance()
     if not instance_handle:
         log_info("Another AZA-STT instance is already running.")
+        if sys.platform == "win32":
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "AZA-STT 已經在背景執行。\n\n"
+                "請在 Windows 右下角通知區尋找 AZA-STT 圖示。",
+                "AZA-STT",
+                0x40,
+            )
         sys.exit(0)
     app = GroqDictateApp(instance_handle=instance_handle)
     app.run()
