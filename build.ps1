@@ -12,6 +12,7 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
     --windowed `
     --name AZA-STT `
     --collect-all opencc `
+    --collect-all _soundfile_data `
     groq_dictate.py
 
 if ($LASTEXITCODE -ne 0) {

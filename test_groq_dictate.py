@@ -1,14 +1,21 @@
 import unittest
+import os
+import tempfile
+import wave
 from unittest.mock import Mock, patch
 
 from groq_dictate import (
+    FLAC_THRESHOLD_BYTES,
     GROQ_KEYS_URL,
     MAX_SENTENCE_CHARACTERS,
+    compress_to_flac,
     normalize_transcription,
     open_groq_keys_page,
     parse_api_keys,
     prompt_for_api_keys,
     punctuate_from_timestamps,
+    run_flac_self_test,
+    sf,
     valid_api_keys,
 )
 
@@ -93,6 +100,34 @@ class TimestampPunctuationTests(unittest.TestCase):
             punctuate_from_timestamps("Groq Gemini", words=words),
             "Groq, Gemini",
         )
+
+
+class AudioCompressionTests(unittest.TestCase):
+    def test_flac_threshold_is_about_four_minutes_of_recorded_audio(self):
+        pcm_bytes_per_second = 16000 * 1 * 2
+        self.assertEqual(FLAC_THRESHOLD_BYTES, 8 * 1024 * 1024)
+        self.assertGreater(FLAC_THRESHOLD_BYTES / pcm_bytes_per_second, 240)
+        self.assertLess(FLAC_THRESHOLD_BYTES / pcm_bytes_per_second, 270)
+
+    @unittest.skipIf(sf is None, "soundfile is not installed")
+    def test_compresses_wav_to_flac_without_external_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            wav_path = os.path.join(temp_dir, "sample.wav")
+            flac_path = os.path.join(temp_dir, "sample.flac")
+            with wave.open(wav_path, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                wav_file.writeframes(b"\x00\x00" * 16000)
+
+            self.assertTrue(compress_to_flac(wav_path, flac_path))
+            with open(flac_path, "rb") as flac_file:
+                self.assertEqual(flac_file.read(4), b"fLaC")
+            self.assertLess(os.path.getsize(flac_path), os.path.getsize(wav_path))
+
+    @unittest.skipIf(sf is None, "soundfile is not installed")
+    def test_packaged_flac_self_test_path(self):
+        self.assertTrue(run_flac_self_test())
 
 
 class ApiKeyConfigurationTests(unittest.TestCase):

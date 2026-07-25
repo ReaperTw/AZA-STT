@@ -17,6 +17,11 @@ import webbrowser
 from logging.handlers import RotatingFileHandler
 
 try:
+    import soundfile as sf
+except ImportError:
+    sf = None
+
+try:
     import winreg
 except ImportError:
     winreg = None
@@ -365,19 +370,88 @@ def check_ffmpeg_available():
         return False
 
 def compress_to_flac(wav_path, flac_path):
+    started_at = time.perf_counter()
+    source_size = os.path.getsize(wav_path)
     try:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        subprocess.run([
-            "ffmpeg", "-y", "-i", wav_path,
-            "-ar", str(RATE), "-ac", str(CHANNELS), "-c:a", "flac",
-            flac_path
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, check=True)
+        if sf is not None:
+            with sf.SoundFile(wav_path, "r") as source:
+                with sf.SoundFile(
+                    flac_path,
+                    "w",
+                    samplerate=source.samplerate,
+                    channels=source.channels,
+                    format="FLAC",
+                    subtype="PCM_16",
+                ) as destination:
+                    while True:
+                        block = source.read(65536, dtype="int16", always_2d=True)
+                        if len(block) == 0:
+                            break
+                        destination.write(block)
+            encoder = "bundled libsndfile"
+        elif check_ffmpeg_available():
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            subprocess.run([
+                "ffmpeg", "-y", "-i", wav_path,
+                "-ar", str(RATE), "-ac", str(CHANNELS), "-c:a", "flac",
+                flac_path
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo, check=True)
+            encoder = "FFmpeg fallback"
+        else:
+            raise RuntimeError("No FLAC encoder is available.")
+
+        compressed_size = os.path.getsize(flac_path)
+        if compressed_size <= 0:
+            raise RuntimeError("The FLAC encoder produced an empty file.")
+
+        elapsed = time.perf_counter() - started_at
+        reduction = 100.0 * (1.0 - (compressed_size / source_size))
+        log_info(
+            f"FLAC compression success via {encoder}: "
+            f"{source_size} -> {compressed_size} bytes "
+            f"({reduction:.1f}% smaller), elapsed: {elapsed:.2f}s"
+        )
         return True
     except Exception as e:
-        log_info(f"FFmpeg compression failed: {e}")
+        log_info(f"FLAC compression failed: {e}")
+        if os.path.exists(flac_path):
+            try:
+                os.remove(flac_path)
+            except OSError:
+                pass
         return False
+
+
+def run_flac_self_test():
+    wav_path = None
+    flac_path = None
+    try:
+        fd, wav_path = tempfile.mkstemp(prefix="aza_stt_self_test_", suffix=".wav")
+        os.close(fd)
+        flac_path = os.path.splitext(wav_path)[0] + ".flac"
+        with wave.open(wav_path, "wb") as wav_file:
+            wav_file.setnchannels(CHANNELS)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(RATE)
+            wav_file.writeframes(b"\x00\x00" * RATE)
+
+        if not compress_to_flac(wav_path, flac_path):
+            return False
+        with open(flac_path, "rb") as flac_file:
+            return flac_file.read(4) == b"fLaC"
+    except Exception as e:
+        log_info(f"FLAC self-test failed: {e}")
+        return False
+    finally:
+        for path in (wav_path, flac_path):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
 
 # Settings
 KEY_FILE_PATH = os.path.join(APP_DIR, "dictate_settings.conf")
@@ -388,7 +462,11 @@ RATE = 16000
 CHUNK = 1024
 RECORD_KEY = 'menu'
 API_TIMEOUT_SECONDS = 30.0
-FLAC_THRESHOLD_BYTES = 20 * 1024 * 1024
+# The recorder already captures Groq's preferred 16 kHz mono audio. Keeping
+# short recordings as WAV avoids encoder startup latency; 8 MiB is about
+# 4 minutes 22 seconds at 16-bit PCM and leaves ample room below the free-tier
+# direct-upload limit before lossless compression is needed.
+FLAC_THRESHOLD_BYTES = 8 * 1024 * 1024
 MICROPHONE_START_TIMEOUT_SECONDS = 5.0
 
 
@@ -778,16 +856,24 @@ class GroqDictateApp:
     def transcribe_audio(self, wav_path):
         upload_path = wav_path
         compressed_path = None
+        wav_size = os.path.getsize(wav_path)
+        duration_seconds = max(
+            0.0,
+            (wav_size - 44) / (RATE * CHANNELS * pyaudio.get_sample_size(FORMAT)),
+        )
+        log_info(
+            f"Audio prepared: duration: {duration_seconds:.2f}s, "
+            f"WAV size: {wav_size} bytes"
+        )
 
-        if os.path.getsize(wav_path) >= FLAC_THRESHOLD_BYTES:
+        if wav_size >= FLAC_THRESHOLD_BYTES:
             candidate_path = os.path.splitext(wav_path)[0] + ".flac"
-            if check_ffmpeg_available():
-                log_info("Large WAV detected. Compressing losslessly to FLAC...")
-                if compress_to_flac(wav_path, candidate_path):
-                    upload_path = candidate_path
-                    compressed_path = candidate_path
+            log_info("Large WAV detected. Compressing losslessly to FLAC...")
+            if compress_to_flac(wav_path, candidate_path):
+                upload_path = candidate_path
+                compressed_path = candidate_path
             else:
-                log_info("FFmpeg not detected. Uploading raw WAV.")
+                log_info("FLAC compression unavailable. Uploading raw WAV.")
 
         attempts = 0
         max_attempts = len(self.api_keys) * len(self.models)
@@ -968,6 +1054,9 @@ class GroqDictateApp:
         self.root.mainloop()
 
 if __name__ == "__main__":
+    if "--self-test-flac" in sys.argv:
+        sys.exit(0 if run_flac_self_test() else 1)
+
     if "--configure" in sys.argv:
         configured_keys = prompt_for_api_keys()
         sys.exit(0 if configured_keys else 1)

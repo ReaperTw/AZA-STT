@@ -11,7 +11,7 @@
 - 長句適度切開，每五句自動換段
 - Groq、Gemini、ChatGPT、Claude Code、NVIDIA、OpenAI、GitHub Copilot、Codex 等科技詞彙校正
 - 單一執行個體、唯一暫存音檔、輪替執行紀錄
-- 短錄音直接上傳 WAV；大檔案才使用無損 FLAC
+- 短錄音直接上傳 WAV；約四分鐘以上的大檔案使用內建的無損 FLAC 壓縮，不需另外安裝 FFmpeg
 
 ## 使用 Release 版
 
@@ -65,6 +65,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 - API key 不會編譯進 EXE，也不應提交至 GitHub。
 - 設定視窗會將 key 儲存在 `%LOCALAPPDATA%\AZA-STT\dictate_settings.conf`，並限制為目前 Windows 使用者存取。
 - 錄音只在停止後送往 Groq 語音 API。
+- Groq 語音 API 依音訊時長計費；FLAC 只用來降低大檔案的上傳量，不會減少計費時長。
 - 轉寫文字會暫時寫入 Windows 剪貼簿，以便送出 `Ctrl+V`。
 - 執行紀錄位於 `%LOCALAPPDATA%\AZA-STT\aza-stt.log`，不記錄完整逐字稿或 API key。
 
