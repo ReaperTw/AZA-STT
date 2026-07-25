@@ -16,12 +16,17 @@
 ## 使用 Release 版
 
 1. 從 GitHub Releases 下載並解壓縮。
-2. 將 `dictate_settings.example.conf` 複製為 `dictate_settings.conf`。
-3. 把範例內容換成自己的 Groq API key，一行一組。
-4. 執行 `AZA-STT.exe`。
+2. 執行 `AZA-STT.exe`。
+3. 第一次啟動會自動顯示設定視窗；若尚未申請，可按
+   **開啟 Groq API Keys** 前往 <https://console.groq.com/keys>。
+4. 貼上自己的 Groq API key 並按下 **儲存**。
 5. 雙擊 Menu 鍵開始錄音，再按一次停止。
 
-也可以設定 `GROQ_API_KEYS` 環境變數，並以逗號、分號或換行分隔多組 key。
+日後若要更換 API key，執行 `Configure-AZA-STT.cmd` 即可重新開啟設定視窗；
+儲存後請重新啟動 AZA-STT。
+
+進階用戶也可以設定 `GROQ_API_KEYS` 環境變數，或在 EXE 旁放置
+`dictate_settings.conf`；多組 key 可用逗號、分號、空格或換行分隔。
 
 若要開機自動啟動，請在 PowerShell 執行：
 
@@ -58,6 +63,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 - `dictate_settings.conf`、`key.txt`、`.env`、日誌、音訊暫存及建置輸出皆由 `.gitignore` 排除。
 - API key 不會編譯進 EXE，也不應提交至 GitHub。
+- 設定視窗會將 key 儲存在 `%LOCALAPPDATA%\AZA-STT\dictate_settings.conf`，並限制為目前 Windows 使用者存取。
 - 錄音只在停止後送往 Groq 語音 API。
 - 轉寫文字會暫時寫入 Windows 剪貼簿，以便送出 `Ctrl+V`。
 - 執行紀錄位於 `%LOCALAPPDATA%\AZA-STT\aza-stt.log`，不記錄完整逐字稿或 API key。

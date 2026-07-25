@@ -1,9 +1,15 @@
 import unittest
+from unittest.mock import Mock, patch
 
 from groq_dictate import (
+    GROQ_KEYS_URL,
     MAX_SENTENCE_CHARACTERS,
     normalize_transcription,
+    open_groq_keys_page,
+    parse_api_keys,
+    prompt_for_api_keys,
     punctuate_from_timestamps,
+    valid_api_keys,
 )
 
 
@@ -87,6 +93,41 @@ class TimestampPunctuationTests(unittest.TestCase):
             punctuate_from_timestamps("Groq Gemini", words=words),
             "Groq, Gemini",
         )
+
+
+class ApiKeyConfigurationTests(unittest.TestCase):
+    def test_parses_multiple_keys_and_ignores_comments(self):
+        self.assertEqual(
+            parse_api_keys("# comment\ngsk_" + ("a" * 30) + ", gsk_" + ("b" * 30)),
+            ["gsk_" + ("a" * 30), "gsk_" + ("b" * 30)],
+        )
+
+    def test_rejects_invalid_key_format(self):
+        self.assertFalse(valid_api_keys(["not-a-groq-key"]))
+
+    def test_accepts_groq_key_format(self):
+        self.assertTrue(valid_api_keys(["gsk_" + ("a" * 30)]))
+
+    @patch("groq_dictate.messagebox.showinfo")
+    @patch("groq_dictate.save_user_api_keys")
+    @patch("groq_dictate.ApiKeySetupDialog")
+    def test_configuration_dialog_saves_valid_key(self, dialog, save_keys, showinfo):
+        expected = ["gsk_" + ("a" * 30)]
+        dialog.return_value.result = expected
+
+        self.assertEqual(prompt_for_api_keys(parent=Mock()), expected)
+        save_keys.assert_called_once_with(expected)
+        showinfo.assert_called_once()
+
+    @patch("groq_dictate.ApiKeySetupDialog")
+    def test_configuration_dialog_can_be_cancelled(self, dialog):
+        dialog.return_value.result = None
+        self.assertEqual(prompt_for_api_keys(parent=Mock()), [])
+
+    @patch("groq_dictate.webbrowser.open_new_tab", return_value=True)
+    def test_opens_official_groq_keys_page(self, open_new_tab):
+        self.assertTrue(open_groq_keys_page())
+        open_new_tab.assert_called_once_with(GROQ_KEYS_URL)
 
 
 if __name__ == "__main__":

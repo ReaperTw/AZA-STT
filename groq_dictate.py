@@ -6,12 +6,14 @@ import threading
 import tempfile
 import wave
 import tkinter as tk
+from tkinter import messagebox, simpledialog
 from threading import Event
 from datetime import datetime
 import subprocess
 import re
 import ctypes
 import logging
+import webbrowser
 from logging.handlers import RotatingFileHandler
 
 try:
@@ -33,6 +35,8 @@ APP_DATA_DIR = os.path.join(
 )
 os.makedirs(APP_DATA_DIR, exist_ok=True)
 LOG_FILE_PATH = os.path.join(APP_DATA_DIR, "aza-stt.log")
+USER_KEY_FILE_PATH = os.path.join(APP_DATA_DIR, "dictate_settings.conf")
+GROQ_KEYS_URL = "https://console.groq.com/keys"
 _LOGGER = None
 
 TECH_TERMS = (
@@ -388,6 +392,170 @@ FLAC_THRESHOLD_BYTES = 20 * 1024 * 1024
 MICROPHONE_START_TIMEOUT_SECONDS = 5.0
 
 
+def parse_api_keys(content):
+    uncommented = "\n".join(
+        line.split("#", 1)[0]
+        for line in (content or "").splitlines()
+    )
+    return [
+        key.strip()
+        for key in re.split(r"[\n\r,;\s]+", uncommented)
+        if key.strip()
+    ]
+
+
+def valid_api_keys(keys):
+    return bool(keys) and all(key.startswith("gsk_") and len(key) >= 20 for key in keys)
+
+
+def save_user_api_keys(keys):
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    temp_path = USER_KEY_FILE_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8", newline="\n") as file:
+        file.write("\n".join(keys) + "\n")
+    os.replace(temp_path, USER_KEY_FILE_PATH)
+
+    if sys.platform == "win32":
+        identity = f"{os.environ.get('USERDOMAIN', '.')}\\" f"{os.environ.get('USERNAME', '')}"
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            subprocess.run(
+                [
+                    "icacls",
+                    USER_KEY_FILE_PATH,
+                    "/inheritance:r",
+                    "/grant:r",
+                    f"{identity}:(F)",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo,
+                check=True,
+            )
+        except Exception as error:
+            log_info(f"Could not restrict API key file permissions: {error}")
+
+
+def open_groq_keys_page():
+    return webbrowser.open_new_tab(GROQ_KEYS_URL)
+
+
+class ApiKeySetupDialog(simpledialog.Dialog):
+    def body(self, master):
+        self.title("AZA-STT 設定")
+        tk.Label(
+            master,
+            text="請貼上 Groq API key",
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        tk.Label(
+            master,
+            text=(
+                "多組 key 可使用逗號、分號或空格分隔。\n"
+                "如果還沒有 key，請點下方按鈕前往 Groq 申請。"
+            ),
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 8))
+        self.key_entry = tk.Entry(master, width=58, show="*")
+        self.key_entry.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        tk.Label(
+            master,
+            text=f"只會儲存在這台電腦：\n{USER_KEY_FILE_PATH}",
+            justify="left",
+            fg="#555555",
+        ).grid(row=3, column=0, sticky="w")
+        master.grid_columnconfigure(0, weight=1)
+        return self.key_entry
+
+    def buttonbox(self):
+        box = tk.Frame(self)
+        tk.Button(
+            box,
+            text="開啟 Groq API Keys",
+            command=self.open_keys_page,
+        ).pack(side="left", padx=(0, 18))
+        tk.Button(
+            box,
+            text="儲存",
+            width=10,
+            command=self.ok,
+            default=tk.ACTIVE,
+        ).pack(side="left", padx=5)
+        tk.Button(
+            box,
+            text="取消",
+            width=10,
+            command=self.cancel,
+        ).pack(side="left", padx=5)
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack(pady=(8, 10))
+
+    def open_keys_page(self):
+        try:
+            if not open_groq_keys_page():
+                raise RuntimeError("Windows did not open the browser.")
+        except Exception as error:
+            messagebox.showerror(
+                "AZA-STT",
+                f"無法開啟 Groq 網頁：\n{error}\n\n{GROQ_KEYS_URL}",
+                parent=self,
+            )
+
+    def validate(self):
+        keys = parse_api_keys(self.key_entry.get())
+        if not valid_api_keys(keys):
+            messagebox.showerror(
+                "AZA-STT",
+                "API key 格式不正確。Groq API key 應以 gsk_ 開頭。",
+                parent=self,
+            )
+            return False
+        self.validated_keys = keys
+        return True
+
+    def apply(self):
+        self.result = self.validated_keys
+
+
+def prompt_for_api_keys(parent=None):
+    owns_root = parent is None
+    dialog_parent = parent
+    if owns_root:
+        dialog_parent = tk.Tk()
+        dialog_parent.withdraw()
+        dialog_parent.attributes("-topmost", True)
+
+    try:
+        dialog = ApiKeySetupDialog(dialog_parent)
+        keys = dialog.result or []
+        if not keys:
+            return []
+
+        try:
+            save_user_api_keys(keys)
+        except Exception as error:
+            messagebox.showerror(
+                "AZA-STT",
+                f"無法儲存 API key：\n{error}",
+                parent=dialog_parent,
+            )
+            return []
+
+        messagebox.showinfo(
+            "AZA-STT",
+            "Groq API key 已儲存。\n"
+            "若 AZA-STT 已在執行，請重新啟動後使用新 key。",
+            parent=dialog_parent,
+        )
+        return keys
+    finally:
+        if owns_root:
+            dialog_parent.destroy()
+
+
 def acquire_single_instance():
     """Return a Windows mutex handle, or None when another copy is running."""
     if sys.platform != "win32":
@@ -419,8 +587,11 @@ class GroqDictateApp:
         self.instance_handle = instance_handle
         self.api_keys = self.load_api_keys()
         if not self.api_keys:
-            log_info(f"No API keys found in {os.path.basename(KEY_FILE_PATH)}")
-            sys.exit(1)
+            log_info("No API keys found. Opening first-run setup.")
+            self.api_keys = prompt_for_api_keys()
+            if not self.api_keys:
+                log_info("API key setup was cancelled.")
+                sys.exit(1)
 
         self.current_key_index = 0
         self.models = ["whisper-large-v3", "whisper-large-v3-turbo"]
@@ -454,14 +625,12 @@ class GroqDictateApp:
     def load_api_keys(self):
         try:
             content = os.environ.get("GROQ_API_KEYS", "")
-            if not content and os.path.exists(KEY_FILE_PATH):
-                with open(KEY_FILE_PATH, "r", encoding="utf-8") as f:
-                    content = f.read()
-            return [
-                key.strip()
-                for key in re.split(r"[\n\r,;\s]+", content)
-                if key.strip() and not key.strip().startswith("#")
-            ]
+            for path in (USER_KEY_FILE_PATH, KEY_FILE_PATH):
+                if not content and os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as file:
+                        content = file.read()
+            keys = parse_api_keys(content)
+            return keys if valid_api_keys(keys) else []
         except Exception as e:
             log_info(f"Failed to load API keys: {e}")
             return []
@@ -799,6 +968,10 @@ class GroqDictateApp:
         self.root.mainloop()
 
 if __name__ == "__main__":
+    if "--configure" in sys.argv:
+        configured_keys = prompt_for_api_keys()
+        sys.exit(0 if configured_keys else 1)
+
     instance_handle = acquire_single_instance()
     if not instance_handle:
         log_info("Another AZA-STT instance is already running.")
