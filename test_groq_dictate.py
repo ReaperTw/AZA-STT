@@ -10,12 +10,16 @@ from groq_dictate import (
     MAX_SENTENCE_CHARACTERS,
     compress_to_flac,
     create_tray_image,
+    display_record_key,
+    load_user_record_key,
     normalize_transcription,
+    normalize_record_key,
     open_groq_keys_page,
     parse_api_keys,
     prompt_for_api_keys,
     punctuate_from_timestamps,
     run_flac_self_test,
+    save_user_record_key,
     sf,
     valid_api_keys,
 )
@@ -175,6 +179,35 @@ class TrayIconTests(unittest.TestCase):
                 self.assertEqual(image.mode, "RGBA")
                 self.assertEqual(image.size, (64, 64))
                 self.assertIsNotNone(image.getbbox())
+
+
+class RecordingKeySettingsTests(unittest.TestCase):
+    def test_normalizes_supported_key_names_and_aliases(self):
+        self.assertEqual(normalize_record_key("F8"), "f8")
+        self.assertEqual(normalize_record_key("apps"), "menu")
+        self.assertEqual(normalize_record_key("PageUp"), "page up")
+        self.assertEqual(display_record_key("f8"), "F8")
+
+    def test_rejects_typing_and_modifier_keys(self):
+        for key in ("a", "space", "ctrl", "shift", "alt"):
+            with self.subTest(key=key):
+                self.assertIsNone(normalize_record_key(key))
+
+    def test_saves_and_loads_recording_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = os.path.join(temp_dir, "settings.json")
+            self.assertEqual(save_user_record_key("F9", settings_path), "f9")
+            self.assertEqual(load_user_record_key(settings_path), "f9")
+
+    def test_invalid_or_missing_settings_use_menu_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_path = os.path.join(temp_dir, "missing.json")
+            self.assertEqual(load_user_record_key(missing_path), "menu")
+
+            invalid_path = os.path.join(temp_dir, "invalid.json")
+            with open(invalid_path, "w", encoding="utf-8") as file:
+                file.write('{"record_key": "space"}')
+            self.assertEqual(load_user_record_key(invalid_path), "menu")
 
 
 if __name__ == "__main__":

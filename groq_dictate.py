@@ -12,6 +12,7 @@ from datetime import datetime
 import subprocess
 import re
 import ctypes
+import json
 import logging
 import queue
 import webbrowser
@@ -50,6 +51,7 @@ APP_DATA_DIR = os.path.join(
 os.makedirs(APP_DATA_DIR, exist_ok=True)
 LOG_FILE_PATH = os.path.join(APP_DATA_DIR, "aza-stt.log")
 USER_KEY_FILE_PATH = os.path.join(APP_DATA_DIR, "dictate_settings.conf")
+USER_SETTINGS_FILE_PATH = os.path.join(APP_DATA_DIR, "settings.json")
 GROQ_KEYS_URL = "https://console.groq.com/keys"
 _LOGGER = None
 
@@ -469,7 +471,14 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
 CHUNK = 1024
-RECORD_KEY = 'menu'
+DEFAULT_RECORD_KEY = "menu"
+SAFE_RECORD_KEYS = (
+    "menu",
+    "f1", "f2", "f3", "f4", "f5", "f6",
+    "f7", "f8", "f9", "f10", "f11", "f12",
+    "pause", "scroll lock", "insert", "home", "end",
+    "page up", "page down", "print screen",
+)
 API_TIMEOUT_SECONDS = 30.0
 # The recorder already captures Groq's preferred 16 kHz mono audio. Keeping
 # short recordings as WAV avoids encoder startup latency; 8 MiB is about
@@ -493,6 +502,61 @@ def parse_api_keys(content):
 
 def valid_api_keys(keys):
     return bool(keys) and all(key.startswith("gsk_") and len(key) >= 20 for key in keys)
+
+
+def normalize_record_key(key):
+    normalized = str(key or "").strip().lower().replace("_", " ")
+    aliases = {
+        "apps": "menu",
+        "application": "menu",
+        "pgup": "page up",
+        "pgdn": "page down",
+        "pageup": "page up",
+        "pagedown": "page down",
+        "prtscn": "print screen",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in SAFE_RECORD_KEYS else None
+
+
+def display_record_key(key):
+    normalized = normalize_record_key(key) or DEFAULT_RECORD_KEY
+    if normalized.startswith("f") and normalized[1:].isdigit():
+        return normalized.upper()
+    return {
+        "menu": "Menu",
+        "page up": "Page Up",
+        "page down": "Page Down",
+        "print screen": "Print Screen",
+        "scroll lock": "Scroll Lock",
+    }.get(normalized, normalized.title())
+
+
+def load_user_record_key(path=USER_SETTINGS_FILE_PATH):
+    try:
+        if not os.path.exists(path):
+            return DEFAULT_RECORD_KEY
+        with open(path, "r", encoding="utf-8") as file:
+            settings = json.load(file)
+        return normalize_record_key(settings.get("record_key")) or DEFAULT_RECORD_KEY
+    except (OSError, ValueError, TypeError) as error:
+        log_info(f"Failed to load user settings: {error}")
+        return DEFAULT_RECORD_KEY
+
+
+def save_user_record_key(record_key, path=USER_SETTINGS_FILE_PATH):
+    normalized = normalize_record_key(record_key)
+    if not normalized:
+        raise ValueError("Unsupported recording key.")
+    settings_dir = os.path.dirname(path)
+    if settings_dir:
+        os.makedirs(settings_dir, exist_ok=True)
+    temp_path = path + ".tmp"
+    with open(temp_path, "w", encoding="utf-8", newline="\n") as file:
+        json.dump({"record_key": normalized}, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    os.replace(temp_path, path)
+    return normalized
 
 
 def save_user_api_keys(keys):
@@ -605,6 +669,141 @@ class ApiKeySetupDialog(simpledialog.Dialog):
 
     def apply(self):
         self.result = self.validated_keys
+
+
+class RecordKeySetupDialog(simpledialog.Dialog):
+    def __init__(self, parent, current_key):
+        self.current_key = normalize_record_key(current_key) or DEFAULT_RECORD_KEY
+        self.selected_key = self.current_key
+        self.capture_hook = None
+        self.capture_queue = queue.Queue()
+        self.capture_poll_id = None
+        super().__init__(parent, title="AZA-STT 錄音按鍵")
+
+    def body(self, master):
+        tk.Label(
+            master,
+            text="設定錄音按鍵",
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        tk.Label(
+            master,
+            text=(
+                "按下方按鈕後,直接按一次想使用的鍵。\n"
+                "為避免影響正常打字,只接受 Menu、F1–F12 與少數功能鍵。"
+            ),
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
+
+        self.selected_var = tk.StringVar(
+            value=f"目前按鍵: {display_record_key(self.selected_key)}"
+        )
+        tk.Label(
+            master,
+            textvariable=self.selected_var,
+            font=("Segoe UI", 11),
+            fg="#1D4ED8",
+        ).grid(row=2, column=0, sticky="w", pady=(0, 8))
+
+        self.capture_button = tk.Button(
+            master,
+            text="按下新的錄音鍵",
+            width=22,
+            command=self.begin_capture,
+        )
+        self.capture_button.grid(row=3, column=0, sticky="w")
+
+        self.capture_status_var = tk.StringVar(value="")
+        tk.Label(
+            master,
+            textvariable=self.capture_status_var,
+            justify="left",
+            fg="#555555",
+        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
+        master.grid_columnconfigure(0, weight=1)
+        return self.capture_button
+
+    def buttonbox(self):
+        box = tk.Frame(self)
+        tk.Button(
+            box,
+            text="恢復 Menu 鍵",
+            command=self.select_default,
+        ).pack(side="left", padx=(0, 18))
+        tk.Button(
+            box,
+            text="儲存",
+            width=10,
+            command=self.ok,
+            default=tk.ACTIVE,
+        ).pack(side="left", padx=5)
+        tk.Button(
+            box,
+            text="取消",
+            width=10,
+            command=self.cancel,
+        ).pack(side="left", padx=5)
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack(pady=(12, 10))
+
+    def begin_capture(self):
+        self.stop_capture()
+        self.capture_status_var.set("等待按鍵中…")
+        self.capture_button.config(state=tk.DISABLED)
+        self.capture_hook = keyboard.hook(self.capture_event, suppress=True)
+        self.capture_poll_id = self.after(50, self.poll_capture_queue)
+
+    def capture_event(self, event):
+        if event.event_type == keyboard.KEY_DOWN:
+            self.capture_queue.put(event.name)
+
+    def poll_capture_queue(self):
+        self.capture_poll_id = None
+        try:
+            key = self.capture_queue.get_nowait()
+        except queue.Empty:
+            if self.capture_hook is not None:
+                self.capture_poll_id = self.after(50, self.poll_capture_queue)
+            return
+
+        self.stop_capture()
+        normalized = normalize_record_key(key)
+        if not normalized:
+            self.capture_status_var.set(
+                f"「{key}」容易影響正常操作,請改用 Menu、F1–F12 或功能鍵。"
+            )
+            return
+        self.selected_key = normalized
+        self.selected_var.set(f"新按鍵: {display_record_key(normalized)}")
+        self.capture_status_var.set("按「儲存」後立即生效,不需要重新啟動。")
+
+    def select_default(self):
+        self.stop_capture()
+        self.selected_key = DEFAULT_RECORD_KEY
+        self.selected_var.set("新按鍵: Menu")
+        self.capture_status_var.set("已選擇預設 Menu 鍵。")
+
+    def stop_capture(self):
+        if self.capture_poll_id is not None:
+            self.after_cancel(self.capture_poll_id)
+            self.capture_poll_id = None
+        if self.capture_hook is not None:
+            try:
+                keyboard.unhook(self.capture_hook)
+            except (KeyError, ValueError):
+                pass
+            self.capture_hook = None
+        if hasattr(self, "capture_button"):
+            self.capture_button.config(state=tk.NORMAL)
+
+    def apply(self):
+        self.stop_capture()
+        self.result = self.selected_key
+
+    def cancel(self, event=None):
+        self.stop_capture()
+        super().cancel(event)
 
 
 def prompt_for_api_keys(parent=None):
@@ -766,9 +965,31 @@ def run_tray_self_test(timeout_seconds=5):
     return passed
 
 
+def run_hotkey_self_test():
+    """Confirm the packaged keyboard backend can bind and remove a supported key."""
+    hooks = []
+    try:
+        hooks = [
+            keyboard.on_press_key("f12", lambda event: None, suppress=True),
+            keyboard.on_release_key("f12", lambda event: None, suppress=True),
+        ]
+        log_info("Recording-key self-test passed.")
+        return True
+    except Exception as error:
+        log_info(f"Recording-key self-test failed: {error}")
+        return False
+    finally:
+        for hook in hooks:
+            try:
+                keyboard.unhook(hook)
+            except (KeyError, ValueError):
+                pass
+
+
 class GroqDictateApp:
     def __init__(self, instance_handle=None):
         self.instance_handle = instance_handle
+        self.record_key = load_user_record_key()
         self.api_keys = self.load_api_keys()
         if not self.api_keys:
             log_info("No API keys found. Opening first-run setup.")
@@ -805,12 +1026,11 @@ class GroqDictateApp:
         self.tray_icon = None
         self.tray_thread = None
         self.is_quitting = False
+        self.keyboard_hooks = []
 
         self.setup_gui()
         self.setup_tray_icon()
-
-        self.listen_thread = threading.Thread(target=self.pynput_listen_loop, daemon=True)
-        self.listen_thread.start()
+        self.bind_record_key()
 
     def load_api_keys(self):
         try:
@@ -825,12 +1045,21 @@ class GroqDictateApp:
             log_info(f"Failed to load API keys: {e}")
             return []
 
-    def pynput_listen_loop(self):
-        keyboard.on_press_key(RECORD_KEY, self.on_key_down, suppress=True)
-        keyboard.on_release_key(RECORD_KEY, self.on_key_up, suppress=True)
+    def bind_record_key(self):
+        self.unbind_record_key()
+        self.keyboard_hooks = [
+            keyboard.on_press_key(self.record_key, self.on_key_down, suppress=True),
+            keyboard.on_release_key(self.record_key, self.on_key_up, suppress=True),
+        ]
+        log_info(f"Recording key bound: {display_record_key(self.record_key)}")
 
-        self.stop_event.wait()
-        keyboard.unhook_all()
+    def unbind_record_key(self):
+        for hook in self.keyboard_hooks:
+            try:
+                keyboard.unhook(hook)
+            except (KeyError, ValueError):
+                pass
+        self.keyboard_hooks = []
 
     def on_key_down(self, e):
         if self.is_processing_ui: return
@@ -1104,7 +1333,13 @@ class GroqDictateApp:
         self.root.after(100, self.process_ui_actions)
 
         self.root.after(100, lambda: print("=== Program started and modules loaded successfully ==="))
-        self.root.after(100, lambda: print(f"🚀 Groq voice ball started! (Double press {RECORD_KEY.upper()} to record)"))
+        self.root.after(
+            100,
+            lambda: print(
+                "🚀 Groq voice ball started! "
+                f"(Double press {display_record_key(self.record_key)} to record)"
+            ),
+        )
 
     def setup_tray_icon(self):
         if pystray is None:
@@ -1118,6 +1353,13 @@ class GroqDictateApp:
                 default=True,
             ),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                lambda item: (
+                    "設定錄音按鍵 "
+                    f"(目前: {display_record_key(self.record_key)})"
+                ),
+                self.enqueue_record_key_setup,
+            ),
             pystray.MenuItem("重新輸入 Groq API key", self.enqueue_api_key_setup),
             pystray.MenuItem("開啟 Groq API Keys 網頁", self.enqueue_open_keys_page),
             pystray.Menu.SEPARATOR,
@@ -1147,7 +1389,7 @@ class GroqDictateApp:
         try:
             icon.notify(
                 "AZA-STT 已縮到 Windows 右下角通知區。\n"
-                f"連按兩下 {RECORD_KEY.upper()} 開始或停止錄音。",
+                f"連按兩下 {display_record_key(self.record_key)} 開始或停止錄音。",
                 "AZA-STT 正在背景執行",
             )
         except Exception as error:
@@ -1169,6 +1411,9 @@ class GroqDictateApp:
 
     def enqueue_api_key_setup(self, icon=None, item=None):
         self.enqueue_ui_action(self.configure_api_keys)
+
+    def enqueue_record_key_setup(self, icon=None, item=None):
+        self.enqueue_ui_action(self.configure_record_key)
 
     def enqueue_open_keys_page(self, icon=None, item=None):
         self.enqueue_ui_action(self.open_keys_page_from_tray)
@@ -1194,11 +1439,49 @@ class GroqDictateApp:
         messagebox.showinfo(
             "AZA-STT",
             f"{status}\n\n"
-            f"連按兩下 {RECORD_KEY.upper()} 開始錄音,再按一次停止並轉成文字。\n"
+            f"連按兩下 {display_record_key(self.record_key)} 開始錄音,"
+            "再按一次停止並轉成文字。\n"
             "程式關閉錄音提示後仍會留在 Windows 右下角通知區。\n\n"
             "若要完整關閉,請在 AZA-STT 圖示按右鍵,選擇「退出 AZA-STT」。",
             parent=self.root,
         )
+
+    def configure_record_key(self):
+        if self.is_recording or self.is_processing_ui:
+            messagebox.showwarning(
+                "AZA-STT",
+                "請先完成目前的錄音或語音辨識,再更換錄音按鍵。",
+                parent=self.root,
+            )
+            return
+
+        previous_key = self.record_key
+        self.unbind_record_key()
+        try:
+            dialog = RecordKeySetupDialog(self.root, previous_key)
+            selected_key = dialog.result
+            if not selected_key:
+                return
+            self.record_key = save_user_record_key(selected_key)
+            log_info(f"Recording key changed to {display_record_key(self.record_key)}")
+            if self.tray_icon:
+                self.tray_icon.update_menu()
+            messagebox.showinfo(
+                "AZA-STT",
+                f"錄音按鍵已改成 {display_record_key(self.record_key)}。\n"
+                f"連按兩下 {display_record_key(self.record_key)} 開始錄音。",
+                parent=self.root,
+            )
+        except Exception as error:
+            self.record_key = previous_key
+            log_info(f"Failed to change recording key: {error}")
+            messagebox.showerror(
+                "AZA-STT",
+                f"無法儲存錄音按鍵:\n{error}",
+                parent=self.root,
+            )
+        finally:
+            self.bind_record_key()
 
     def configure_api_keys(self):
         if self.is_recording or self.is_processing_ui:
@@ -1289,6 +1572,7 @@ class GroqDictateApp:
         self.stop_event.set()
         self.cancel_hide_timer()
         self.is_recording = False
+        self.unbind_record_key()
         if self.tray_icon:
             try:
                 self.tray_icon.stop()
@@ -1309,6 +1593,9 @@ class GroqDictateApp:
         self.root.mainloop()
 
 if __name__ == "__main__":
+    if "--self-test-hotkey" in sys.argv:
+        sys.exit(0 if run_hotkey_self_test() else 1)
+
     if "--self-test-tray" in sys.argv:
         sys.exit(0 if run_tray_self_test() else 1)
 
