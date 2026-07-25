@@ -41,6 +41,7 @@ import pyaudio
 import pyperclip
 from groq import Groq
 import opencc
+from pynput import mouse as pynput_mouse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else SCRIPT_DIR
@@ -67,7 +68,7 @@ TECH_TERMS = (
 TRANSCRIPTION_PROMPT = (
     "繁體中文 AI 與軟體開發討論逐字稿。常用拼字: "
     + ", ".join(TECH_TERMS)
-    + ". 使用半形逗號與句點,依語意自然分句。"
+    + ". 使用半形標點,標點後保留一個空格,並依語意自然分句。"
 )
 
 # Longer or more specific names must run before their shorter forms.
@@ -293,25 +294,65 @@ def _add_paragraph_breaks(text):
     return "".join(output)
 
 
+def _format_half_width_punctuation_spacing(text):
+    """Add one readable space after half-width punctuation without damaging tokens."""
+    text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
+    text = re.sub(r"[ \t]+", " ", text)
+
+    output = []
+    length = len(text)
+    for index, char in enumerate(text):
+        output.append(char)
+        if char not in ",.;:!?":
+            continue
+
+        previous_char = text[index - 1] if index > 0 else ""
+        next_char = text[index + 1] if index + 1 < length else ""
+        if not next_char or next_char.isspace() or next_char in ",.;:!?)]}":
+            continue
+
+        # Preserve numbers, versions, domains, technical names and URL schemes.
+        if char == "," and previous_char.isdigit() and next_char.isdigit():
+            continue
+        if (
+            char == "."
+            and previous_char.isascii()
+            and previous_char.isalnum()
+            and next_char.isascii()
+            and next_char.isalnum()
+        ):
+            continue
+        if char == ":" and (
+            (previous_char.isdigit() and next_char.isdigit()) or next_char == "/"
+        ):
+            continue
+
+        output.append(" ")
+
+    formatted = "".join(output)
+    formatted = re.sub(r"[ \t]*\n[ \t]*", "\n", formatted)
+    return formatted.strip()
+
+
 def normalize_transcription(text):
-    """Keep vocabulary intact and consistently use half-width punctuation."""
+    """Keep vocabulary intact and use spaced half-width punctuation consistently."""
     if not text:
         return text
 
     normalized = text.translate(PUNCTUATION_TRANSLATION)
     normalized = canonicalize_tech_terms(normalized)
 
-    # A space before punctuation is wrong in both Chinese and English. A space
-    # after punctuation is removed only before CJK, preserving "Hello, world".
+    # Remove invalid spaces before punctuation first. Consistent spacing after
+    # punctuation is applied after sentence and paragraph processing.
     normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
-    normalized = re.sub(r"([,.;:!?])\s+(?=[\u3400-\u9fff])", r"\1", normalized)
     normalized = re.sub(r"[ \t]+", " ", normalized).strip()
     normalized = _limit_sentence_length(normalized)
 
     if normalized and normalized[-1] not in ".!?":
         normalized += "."
 
-    return _add_paragraph_breaks(normalized)
+    normalized = _add_paragraph_breaks(normalized)
+    return _format_half_width_punctuation_spacing(normalized)
 
 
 def log_info(msg):
@@ -472,13 +513,9 @@ CHANNELS = 1
 RATE = 16000
 CHUNK = 1024
 DEFAULT_RECORD_KEY = "menu"
-SAFE_RECORD_KEYS = (
-    "menu",
-    "f1", "f2", "f3", "f4", "f5", "f6",
-    "f7", "f8", "f9", "f10", "f11", "f12",
-    "pause", "scroll lock", "insert", "home", "end",
-    "page up", "page down", "print screen",
-)
+DEFAULT_ACTIVATION_MODE = "double_press"
+ACTIVATION_MODES = ("double_press", "single_press", "hold")
+MOUSE_TRIGGER_PREFIX = "mouse:"
 API_TIMEOUT_SECONDS = 30.0
 # The recorder already captures Groq's preferred 16 kHz mono audio. Keeping
 # short recordings as WAV avoids encoder startup latency; 8 MiB is about
@@ -514,13 +551,33 @@ def normalize_record_key(key):
         "pageup": "page up",
         "pagedown": "page down",
         "prtscn": "print screen",
+        "mouse:x": "mouse:x1",
+        "mouse:back": "mouse:x1",
+        "mouse:forward": "mouse:x2",
     }
     normalized = aliases.get(normalized, normalized)
-    return normalized if normalized in SAFE_RECORD_KEYS else None
+    if normalized in ("mouse:x1", "mouse:x2"):
+        return normalized
+    if not normalized or normalized.startswith(MOUSE_TRIGGER_PREFIX):
+        return None
+    try:
+        keyboard.key_to_scan_codes(normalized)
+        return normalized
+    except (ValueError, KeyError):
+        return None
+
+
+def normalize_activation_mode(mode):
+    normalized = str(mode or "").strip().lower()
+    return normalized if normalized in ACTIVATION_MODES else DEFAULT_ACTIVATION_MODE
 
 
 def display_record_key(key):
     normalized = normalize_record_key(key) or DEFAULT_RECORD_KEY
+    if normalized == "mouse:x1":
+        return "滑鼠側鍵 1 (上一頁)"
+    if normalized == "mouse:x2":
+        return "滑鼠側鍵 2 (下一頁)"
     if normalized.startswith("f") and normalized[1:].isdigit():
         return normalized.upper()
     return {
@@ -532,31 +589,62 @@ def display_record_key(key):
     }.get(normalized, normalized.title())
 
 
-def load_user_record_key(path=USER_SETTINGS_FILE_PATH):
+def display_activation_mode(mode):
+    return {
+        "double_press": "連按兩下開始,按一下停止",
+        "single_press": "按一下開始,再按一下停止",
+        "hold": "按住時錄音,放開停止",
+    }[normalize_activation_mode(mode)]
+
+
+def load_user_input_settings(path=USER_SETTINGS_FILE_PATH):
     try:
         if not os.path.exists(path):
-            return DEFAULT_RECORD_KEY
+            return DEFAULT_RECORD_KEY, DEFAULT_ACTIVATION_MODE
         with open(path, "r", encoding="utf-8") as file:
             settings = json.load(file)
-        return normalize_record_key(settings.get("record_key")) or DEFAULT_RECORD_KEY
+        record_key = normalize_record_key(settings.get("record_key")) or DEFAULT_RECORD_KEY
+        activation_mode = normalize_activation_mode(settings.get("activation_mode"))
+        return record_key, activation_mode
     except (OSError, ValueError, TypeError) as error:
         log_info(f"Failed to load user settings: {error}")
-        return DEFAULT_RECORD_KEY
+        return DEFAULT_RECORD_KEY, DEFAULT_ACTIVATION_MODE
 
 
-def save_user_record_key(record_key, path=USER_SETTINGS_FILE_PATH):
+def load_user_record_key(path=USER_SETTINGS_FILE_PATH):
+    return load_user_input_settings(path)[0]
+
+
+def save_user_input_settings(
+    record_key,
+    activation_mode=DEFAULT_ACTIVATION_MODE,
+    path=USER_SETTINGS_FILE_PATH,
+):
     normalized = normalize_record_key(record_key)
     if not normalized:
         raise ValueError("Unsupported recording key.")
+    normalized_mode = normalize_activation_mode(activation_mode)
     settings_dir = os.path.dirname(path)
     if settings_dir:
         os.makedirs(settings_dir, exist_ok=True)
     temp_path = path + ".tmp"
     with open(temp_path, "w", encoding="utf-8", newline="\n") as file:
-        json.dump({"record_key": normalized}, file, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "record_key": normalized,
+                "activation_mode": normalized_mode,
+            },
+            file,
+            ensure_ascii=False,
+            indent=2,
+        )
         file.write("\n")
     os.replace(temp_path, path)
-    return normalized
+    return normalized, normalized_mode
+
+
+def save_user_record_key(record_key, path=USER_SETTINGS_FILE_PATH):
+    return save_user_input_settings(record_key, DEFAULT_ACTIVATION_MODE, path)[0]
 
 
 def save_user_api_keys(keys):
@@ -672,25 +760,27 @@ class ApiKeySetupDialog(simpledialog.Dialog):
 
 
 class RecordKeySetupDialog(simpledialog.Dialog):
-    def __init__(self, parent, current_key):
+    def __init__(self, parent, current_key, current_mode):
         self.current_key = normalize_record_key(current_key) or DEFAULT_RECORD_KEY
         self.selected_key = self.current_key
-        self.capture_hook = None
+        self.current_mode = normalize_activation_mode(current_mode)
+        self.capture_keyboard_hook = None
+        self.capture_mouse_listener = None
         self.capture_queue = queue.Queue()
         self.capture_poll_id = None
-        super().__init__(parent, title="AZA-STT 錄音按鍵")
+        super().__init__(parent, title="AZA-STT 錄音控制")
 
     def body(self, master):
         tk.Label(
             master,
-            text="設定錄音按鍵",
+            text="設定錄音控制",
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
         tk.Label(
             master,
             text=(
-                "按下方按鈕後,直接按一次想使用的鍵。\n"
-                "為避免影響正常打字,只接受 Menu、F1–F12 與少數功能鍵。"
+                "可以使用任何鍵盤按鍵,也可以使用滑鼠側鍵。\n"
+                "選中的按鍵會由 AZA-STT 攔截,原本功能可能無法使用。"
             ),
             justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(0, 10))
@@ -707,8 +797,8 @@ class RecordKeySetupDialog(simpledialog.Dialog):
 
         self.capture_button = tk.Button(
             master,
-            text="按下新的錄音鍵",
-            width=22,
+            text="按下新的鍵盤鍵或滑鼠側鍵",
+            width=28,
             command=self.begin_capture,
         )
         self.capture_button.grid(row=3, column=0, sticky="w")
@@ -719,7 +809,20 @@ class RecordKeySetupDialog(simpledialog.Dialog):
             textvariable=self.capture_status_var,
             justify="left",
             fg="#555555",
-        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ).grid(row=4, column=0, sticky="w", pady=(6, 10))
+
+        mode_box = tk.LabelFrame(master, text="錄音方式", padx=10, pady=6)
+        mode_box.grid(row=5, column=0, sticky="ew")
+        self.mode_var = tk.StringVar(value=self.current_mode)
+        for mode in ACTIVATION_MODES:
+            tk.Radiobutton(
+                mode_box,
+                text=display_activation_mode(mode),
+                variable=self.mode_var,
+                value=mode,
+                anchor="w",
+            ).pack(fill="x", anchor="w")
+
         master.grid_columnconfigure(0, weight=1)
         return self.capture_button
 
@@ -727,7 +830,7 @@ class RecordKeySetupDialog(simpledialog.Dialog):
         box = tk.Frame(self)
         tk.Button(
             box,
-            text="恢復 Menu 鍵",
+            text="恢復預設",
             command=self.select_default,
         ).pack(side="left", padx=(0, 18))
         tk.Button(
@@ -749,30 +852,65 @@ class RecordKeySetupDialog(simpledialog.Dialog):
 
     def begin_capture(self):
         self.stop_capture()
-        self.capture_status_var.set("等待按鍵中…")
+        self.capture_status_var.set("等待鍵盤按鍵或滑鼠側鍵中…")
         self.capture_button.config(state=tk.DISABLED)
-        self.capture_hook = keyboard.hook(self.capture_event, suppress=True)
+        try:
+            self.capture_keyboard_hook = keyboard.hook(
+                self.capture_keyboard_event,
+                suppress=True,
+            )
+            self.capture_mouse_listener = pynput_mouse.Listener(
+                on_click=self.capture_mouse_event,
+                win32_event_filter=self.capture_mouse_filter,
+            )
+            self.capture_mouse_listener.start()
+        except Exception as error:
+            self.stop_capture()
+            self.capture_status_var.set(f"無法開始偵測輸入: {error}")
+            return
         self.capture_poll_id = self.after(50, self.poll_capture_queue)
 
-    def capture_event(self, event):
-        if event.event_type == keyboard.KEY_DOWN:
+    def capture_keyboard_event(self, event):
+        if event.event_type == keyboard.KEY_DOWN and event.name:
             self.capture_queue.put(event.name)
+
+    def capture_mouse_event(self, x, y, button, pressed, injected=False):
+        if not pressed:
+            return
+        if button == pynput_mouse.Button.x1:
+            self.capture_queue.put("mouse:x1")
+        elif button == pynput_mouse.Button.x2:
+            self.capture_queue.put("mouse:x2")
+
+    def capture_mouse_filter(self, msg, data):
+        if msg in (
+            pynput_mouse.Listener.WM_XBUTTONDOWN,
+            pynput_mouse.Listener.WM_XBUTTONUP,
+        ):
+            button_id = (int(data.mouseData) >> 16) & 0xFFFF
+            if button_id in (
+                pynput_mouse.Listener.XBUTTON1,
+                pynput_mouse.Listener.XBUTTON2,
+            ):
+                self.capture_mouse_listener.suppress_event()
+        return True
 
     def poll_capture_queue(self):
         self.capture_poll_id = None
         try:
             key = self.capture_queue.get_nowait()
         except queue.Empty:
-            if self.capture_hook is not None:
+            if (
+                self.capture_keyboard_hook is not None
+                or self.capture_mouse_listener is not None
+            ):
                 self.capture_poll_id = self.after(50, self.poll_capture_queue)
             return
 
         self.stop_capture()
         normalized = normalize_record_key(key)
         if not normalized:
-            self.capture_status_var.set(
-                f"「{key}」容易影響正常操作,請改用 Menu、F1–F12 或功能鍵。"
-            )
+            self.capture_status_var.set(f"無法辨識「{key}」,請再試一次。")
             return
         self.selected_key = normalized
         self.selected_var.set(f"新按鍵: {display_record_key(normalized)}")
@@ -781,25 +919,36 @@ class RecordKeySetupDialog(simpledialog.Dialog):
     def select_default(self):
         self.stop_capture()
         self.selected_key = DEFAULT_RECORD_KEY
+        self.mode_var.set(DEFAULT_ACTIVATION_MODE)
         self.selected_var.set("新按鍵: Menu")
-        self.capture_status_var.set("已選擇預設 Menu 鍵。")
+        self.capture_status_var.set("已恢復預設按鍵與錄音方式。")
 
     def stop_capture(self):
         if self.capture_poll_id is not None:
             self.after_cancel(self.capture_poll_id)
             self.capture_poll_id = None
-        if self.capture_hook is not None:
+        if self.capture_keyboard_hook is not None:
             try:
-                keyboard.unhook(self.capture_hook)
+                keyboard.unhook(self.capture_keyboard_hook)
             except (KeyError, ValueError):
                 pass
-            self.capture_hook = None
+            self.capture_keyboard_hook = None
+        if self.capture_mouse_listener is not None:
+            try:
+                self.capture_mouse_listener.stop()
+                self.capture_mouse_listener.join(timeout=1)
+            except (RuntimeError, OSError):
+                pass
+            self.capture_mouse_listener = None
         if hasattr(self, "capture_button"):
             self.capture_button.config(state=tk.NORMAL)
 
     def apply(self):
         self.stop_capture()
-        self.result = self.selected_key
+        self.result = (
+            self.selected_key,
+            normalize_activation_mode(self.mode_var.get()),
+        )
 
     def cancel(self, event=None):
         self.stop_capture()
@@ -966,17 +1115,25 @@ def run_tray_self_test(timeout_seconds=5):
 
 
 def run_hotkey_self_test():
-    """Confirm the packaged keyboard backend can bind and remove a supported key."""
+    """Confirm packaged keyboard and mouse backends can bind and stop cleanly."""
     hooks = []
+    mouse_listener = None
     try:
         hooks = [
             keyboard.on_press_key("f12", lambda event: None, suppress=True),
             keyboard.on_release_key("f12", lambda event: None, suppress=True),
         ]
-        log_info("Recording-key self-test passed.")
+        mouse_listener = pynput_mouse.Listener(
+            on_click=lambda x, y, button, pressed, injected=False: None,
+        )
+        mouse_listener.start()
+        time.sleep(0.1)
+        if not mouse_listener.running:
+            raise RuntimeError("Mouse listener did not start.")
+        log_info("Recording-control self-test passed.")
         return True
     except Exception as error:
-        log_info(f"Recording-key self-test failed: {error}")
+        log_info(f"Recording-control self-test failed: {error}")
         return False
     finally:
         for hook in hooks:
@@ -984,12 +1141,18 @@ def run_hotkey_self_test():
                 keyboard.unhook(hook)
             except (KeyError, ValueError):
                 pass
+        if mouse_listener is not None:
+            try:
+                mouse_listener.stop()
+                mouse_listener.join(timeout=1)
+            except (RuntimeError, OSError):
+                pass
 
 
 class GroqDictateApp:
     def __init__(self, instance_handle=None):
         self.instance_handle = instance_handle
-        self.record_key = load_user_record_key()
+        self.record_key, self.activation_mode = load_user_input_settings()
         self.api_keys = self.load_api_keys()
         if not self.api_keys:
             log_info("No API keys found. Opening first-run setup.")
@@ -1027,6 +1190,7 @@ class GroqDictateApp:
         self.tray_thread = None
         self.is_quitting = False
         self.keyboard_hooks = []
+        self.mouse_listener = None
 
         self.setup_gui()
         self.setup_tray_icon()
@@ -1045,13 +1209,39 @@ class GroqDictateApp:
             log_info(f"Failed to load API keys: {e}")
             return []
 
+    def recording_instruction(self):
+        key_name = display_record_key(self.record_key)
+        return {
+            "double_press": (
+                f"連按兩下 {key_name} 開始錄音,錄音中再按一下停止"
+            ),
+            "single_press": (
+                f"按一下 {key_name} 開始錄音,再按一下停止"
+            ),
+            "hold": (
+                f"按住 {key_name} 錄音,放開後停止"
+            ),
+        }[normalize_activation_mode(self.activation_mode)]
+
     def bind_record_key(self):
         self.unbind_record_key()
-        self.keyboard_hooks = [
-            keyboard.on_press_key(self.record_key, self.on_key_down, suppress=True),
-            keyboard.on_release_key(self.record_key, self.on_key_up, suppress=True),
-        ]
-        log_info(f"Recording key bound: {display_record_key(self.record_key)}")
+        self.is_key_held = False
+        if self.record_key.startswith(MOUSE_TRIGGER_PREFIX):
+            self.mouse_listener = pynput_mouse.Listener(
+                on_click=self.on_mouse_click,
+                win32_event_filter=self.mouse_event_filter,
+            )
+            self.mouse_listener.start()
+        else:
+            self.keyboard_hooks = [
+                keyboard.on_press_key(self.record_key, self.on_key_down, suppress=True),
+                keyboard.on_release_key(self.record_key, self.on_key_up, suppress=True),
+            ]
+        log_info(
+            "Recording control bound: "
+            f"{display_record_key(self.record_key)}, "
+            f"{display_activation_mode(self.activation_mode)}"
+        )
 
     def unbind_record_key(self):
         for hook in self.keyboard_hooks:
@@ -1060,27 +1250,88 @@ class GroqDictateApp:
             except (KeyError, ValueError):
                 pass
         self.keyboard_hooks = []
+        if self.mouse_listener is not None:
+            try:
+                self.mouse_listener.stop()
+                self.mouse_listener.join(timeout=1)
+            except (RuntimeError, OSError):
+                pass
+            self.mouse_listener = None
 
-    def on_key_down(self, e):
-        if self.is_processing_ui: return
+    def selected_mouse_button(self):
+        return {
+            "mouse:x1": pynput_mouse.Button.x1,
+            "mouse:x2": pynput_mouse.Button.x2,
+        }.get(self.record_key)
 
-        if not self.is_key_held:
-            self.is_key_held = True
-            current_time = time.time()
+    def mouse_event_filter(self, msg, data):
+        selected_button = self.selected_mouse_button()
+        if selected_button is None:
+            return True
+        if msg not in (
+            pynput_mouse.Listener.WM_XBUTTONDOWN,
+            pynput_mouse.Listener.WM_XBUTTONUP,
+        ):
+            return True
 
+        button_id = (int(data.mouseData) >> 16) & 0xFFFF
+        selected_id = (
+            pynput_mouse.Listener.XBUTTON1
+            if selected_button == pynput_mouse.Button.x1
+            else pynput_mouse.Listener.XBUTTON2
+        )
+        if button_id == selected_id and self.mouse_listener is not None:
+            self.mouse_listener.suppress_event()
+        return True
+
+    def on_mouse_click(self, x, y, button, pressed, injected=False):
+        if button != self.selected_mouse_button():
+            return
+        if pressed:
+            self.on_key_down()
+        else:
+            self.on_key_up()
+
+    def on_key_down(self, event=None):
+        if self.is_processing_ui or self.is_key_held:
+            return
+
+        self.is_key_held = True
+        if self.activation_mode == "hold":
             if not self.is_recording:
-                if current_time - self.last_press_time <= self.double_press_threshold:
-                    log_info("Double press detected, starting recording...")
-                    self.start_recording_process()
-                self.last_press_time = current_time
-            else:
-                log_info("Key pressed during recording, stopping recording...")
-                self.is_key_held = False
-                self.stop_recording_process()
+                log_info("Hold control pressed, starting recording...")
+                self.start_recording_process()
+            return
 
-    def on_key_up(self, e):
-        if self.is_processing_ui: return
+        if self.activation_mode == "single_press":
+            if self.is_recording:
+                log_info("Single press detected, stopping recording...")
+                self.stop_recording_process()
+            else:
+                log_info("Single press detected, starting recording...")
+                self.start_recording_process()
+            return
+
+        current_time = time.time()
+        if not self.is_recording:
+            if current_time - self.last_press_time <= self.double_press_threshold:
+                log_info("Double press detected, starting recording...")
+                self.start_recording_process()
+            self.last_press_time = current_time
+        else:
+            log_info("Key pressed during recording, stopping recording...")
+            self.stop_recording_process()
+
+    def on_key_up(self, event=None):
+        was_held = self.is_key_held
         self.is_key_held = False
+        if (
+            was_held
+            and self.activation_mode == "hold"
+            and self.is_recording
+        ):
+            log_info("Hold control released, stopping recording...")
+            self.stop_recording_process()
 
     def start_recording_process(self):
         if not self.is_recording:
@@ -1337,7 +1588,7 @@ class GroqDictateApp:
             100,
             lambda: print(
                 "🚀 Groq voice ball started! "
-                f"(Double press {display_record_key(self.record_key)} to record)"
+                f"({self.recording_instruction()})"
             ),
         )
 
@@ -1355,7 +1606,7 @@ class GroqDictateApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 lambda item: (
-                    "設定錄音按鍵 "
+                    "設定錄音控制 "
                     f"(目前: {display_record_key(self.record_key)})"
                 ),
                 self.enqueue_record_key_setup,
@@ -1389,7 +1640,7 @@ class GroqDictateApp:
         try:
             icon.notify(
                 "AZA-STT 已縮到 Windows 右下角通知區。\n"
-                f"連按兩下 {display_record_key(self.record_key)} 開始或停止錄音。",
+                f"{self.recording_instruction()}。",
                 "AZA-STT 正在背景執行",
             )
         except Exception as error:
@@ -1439,8 +1690,7 @@ class GroqDictateApp:
         messagebox.showinfo(
             "AZA-STT",
             f"{status}\n\n"
-            f"連按兩下 {display_record_key(self.record_key)} 開始錄音,"
-            "再按一次停止並轉成文字。\n"
+            f"{self.recording_instruction()},完成後會轉成文字。\n"
             "程式關閉錄音提示後仍會留在 Windows 右下角通知區。\n\n"
             "若要完整關閉,請在 AZA-STT 圖示按右鍵,選擇「退出 AZA-STT」。",
             parent=self.root,
@@ -1450,34 +1700,47 @@ class GroqDictateApp:
         if self.is_recording or self.is_processing_ui:
             messagebox.showwarning(
                 "AZA-STT",
-                "請先完成目前的錄音或語音辨識,再更換錄音按鍵。",
+                "請先完成目前的錄音或語音辨識,再更換錄音控制。",
                 parent=self.root,
             )
             return
 
         previous_key = self.record_key
+        previous_mode = self.activation_mode
         self.unbind_record_key()
         try:
-            dialog = RecordKeySetupDialog(self.root, previous_key)
-            selected_key = dialog.result
-            if not selected_key:
+            dialog = RecordKeySetupDialog(
+                self.root,
+                previous_key,
+                previous_mode,
+            )
+            selected_settings = dialog.result
+            if not selected_settings:
                 return
-            self.record_key = save_user_record_key(selected_key)
-            log_info(f"Recording key changed to {display_record_key(self.record_key)}")
+            selected_key, selected_mode = selected_settings
+            self.record_key, self.activation_mode = save_user_input_settings(
+                selected_key,
+                selected_mode,
+            )
+            log_info(
+                "Recording control changed to "
+                f"{display_record_key(self.record_key)}, "
+                f"{display_activation_mode(self.activation_mode)}"
+            )
             if self.tray_icon:
                 self.tray_icon.update_menu()
             messagebox.showinfo(
                 "AZA-STT",
-                f"錄音按鍵已改成 {display_record_key(self.record_key)}。\n"
-                f"連按兩下 {display_record_key(self.record_key)} 開始錄音。",
+                f"錄音控制已儲存。\n{self.recording_instruction()}。",
                 parent=self.root,
             )
         except Exception as error:
             self.record_key = previous_key
-            log_info(f"Failed to change recording key: {error}")
+            self.activation_mode = previous_mode
+            log_info(f"Failed to change recording control: {error}")
             messagebox.showerror(
                 "AZA-STT",
-                f"無法儲存錄音按鍵:\n{error}",
+                f"無法儲存錄音控制:\n{error}",
                 parent=self.root,
             )
         finally:

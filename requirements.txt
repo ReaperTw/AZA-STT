@@ -4,5 +4,6 @@ opencc-python-reimplemented==0.1.7
 Pillow==11.3.0
 PyAudio==0.2.14
 pyperclip==1.11.0
+pynput==1.8.2
 pystray==0.19.5
 soundfile==0.13.1

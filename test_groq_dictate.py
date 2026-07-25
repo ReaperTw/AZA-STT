@@ -7,18 +7,23 @@ from unittest.mock import Mock, patch
 from groq_dictate import (
     FLAC_THRESHOLD_BYTES,
     GROQ_KEYS_URL,
+    GroqDictateApp,
     MAX_SENTENCE_CHARACTERS,
     compress_to_flac,
     create_tray_image,
+    display_activation_mode,
     display_record_key,
+    load_user_input_settings,
     load_user_record_key,
     normalize_transcription,
+    normalize_activation_mode,
     normalize_record_key,
     open_groq_keys_page,
     parse_api_keys,
     prompt_for_api_keys,
     punctuate_from_timestamps,
     run_flac_self_test,
+    save_user_input_settings,
     save_user_record_key,
     sf,
     valid_api_keys,
@@ -32,7 +37,7 @@ class NormalizeTranscriptionTests(unittest.TestCase):
     def test_converts_chinese_punctuation_to_half_width(self):
         self.assertEqual(
             normalize_transcription("這是腳本，請執行。真的可以嗎？可以！"),
-            "這是腳本,請執行.真的可以嗎?可以!",
+            "這是腳本, 請執行. 真的可以嗎? 可以!",
         )
 
     def test_adds_a_final_period_when_missing(self):
@@ -53,8 +58,8 @@ class NormalizeTranscriptionTests(unittest.TestCase):
                 "groq、gemini、chat gpt、claude code、nvidia gpu、"
                 "git hub copilot、node js、type script"
             ),
-            "Groq,Gemini,ChatGPT,Claude Code,NVIDIA GPU,"
-            "GitHub Copilot,Node.js,TypeScript.",
+            "Groq, Gemini, ChatGPT, Claude Code, NVIDIA GPU, "
+            "GitHub Copilot, Node.js, TypeScript.",
         )
 
     def test_keeps_groq_and_grok_distinct(self):
@@ -64,13 +69,22 @@ class NormalizeTranscriptionTests(unittest.TestCase):
         source = ("字" * MAX_SENTENCE_CHARACTERS) + ",下一句"
         self.assertEqual(
             normalize_transcription(source),
-            ("字" * MAX_SENTENCE_CHARACTERS) + ".下一句.",
+            ("字" * MAX_SENTENCE_CHARACTERS) + ". 下一句.",
         )
 
     def test_adds_a_paragraph_break_after_five_sentences(self):
         self.assertEqual(
             normalize_transcription("一.二.三.四.五.六."),
-            "一.二.三.四.五.\n\n六.",
+            "一. 二. 三. 四. 五.\n\n六.",
+        )
+
+    def test_preserves_urls_versions_decimals_and_thousands(self):
+        self.assertEqual(
+            normalize_transcription(
+                "Next.js 版本 1.2 網址 https://example.com，數字 1,000 正常嗎？"
+            ),
+            "Next.js 版本 1.2 網址 https://example.com, "
+            "數字 1,000 正常嗎?",
         )
 
 
@@ -186,12 +200,11 @@ class RecordingKeySettingsTests(unittest.TestCase):
         self.assertEqual(normalize_record_key("F8"), "f8")
         self.assertEqual(normalize_record_key("apps"), "menu")
         self.assertEqual(normalize_record_key("PageUp"), "page up")
+        self.assertEqual(normalize_record_key("space"), "space")
+        self.assertEqual(normalize_record_key("ctrl"), "ctrl")
+        self.assertEqual(normalize_record_key("mouse:x"), "mouse:x1")
         self.assertEqual(display_record_key("f8"), "F8")
-
-    def test_rejects_typing_and_modifier_keys(self):
-        for key in ("a", "space", "ctrl", "shift", "alt"):
-            with self.subTest(key=key):
-                self.assertIsNone(normalize_record_key(key))
+        self.assertEqual(display_record_key("mouse:x2"), "滑鼠側鍵 2 (下一頁)")
 
     def test_saves_and_loads_recording_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -199,15 +212,106 @@ class RecordingKeySettingsTests(unittest.TestCase):
             self.assertEqual(save_user_record_key("F9", settings_path), "f9")
             self.assertEqual(load_user_record_key(settings_path), "f9")
 
+    def test_saves_and_loads_activation_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = os.path.join(temp_dir, "settings.json")
+            self.assertEqual(
+                save_user_input_settings("mouse:x2", "hold", settings_path),
+                ("mouse:x2", "hold"),
+            )
+            self.assertEqual(
+                load_user_input_settings(settings_path),
+                ("mouse:x2", "hold"),
+            )
+            self.assertEqual(display_activation_mode("hold"), "按住時錄音,放開停止")
+
     def test_invalid_or_missing_settings_use_menu_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             missing_path = os.path.join(temp_dir, "missing.json")
-            self.assertEqual(load_user_record_key(missing_path), "menu")
+            self.assertEqual(
+                load_user_input_settings(missing_path),
+                ("menu", "double_press"),
+            )
 
             invalid_path = os.path.join(temp_dir, "invalid.json")
             with open(invalid_path, "w", encoding="utf-8") as file:
-                file.write('{"record_key": "space"}')
-            self.assertEqual(load_user_record_key(invalid_path), "menu")
+                file.write(
+                    '{"record_key": "definitely-not-a-real-key", '
+                    '"activation_mode": "unknown"}'
+                )
+            self.assertEqual(
+                load_user_input_settings(invalid_path),
+                ("menu", "double_press"),
+            )
+            self.assertEqual(normalize_activation_mode("unknown"), "double_press")
+
+
+class RecordingActivationModeTests(unittest.TestCase):
+    @staticmethod
+    def make_app(mode):
+        app = GroqDictateApp.__new__(GroqDictateApp)
+        app.activation_mode = mode
+        app.is_processing_ui = False
+        app.is_key_held = False
+        app.is_recording = False
+        app.last_press_time = 0
+        app.double_press_threshold = 0.4
+
+        def start_recording():
+            app.is_recording = True
+
+        def stop_recording():
+            app.is_recording = False
+
+        app.start_recording_process = Mock(side_effect=start_recording)
+        app.stop_recording_process = Mock(side_effect=stop_recording)
+        return app
+
+    def test_single_press_toggles_recording(self):
+        app = self.make_app("single_press")
+        app.on_key_down()
+        app.start_recording_process.assert_called_once()
+        app.on_key_up()
+        app.on_key_down()
+        app.stop_recording_process.assert_called_once()
+
+    def test_hold_records_only_while_pressed(self):
+        app = self.make_app("hold")
+        app.on_key_down()
+        app.start_recording_process.assert_called_once()
+        app.on_key_up()
+        app.stop_recording_process.assert_called_once()
+
+    def test_mouse_filter_suppresses_only_selected_side_button(self):
+        app = GroqDictateApp.__new__(GroqDictateApp)
+        app.record_key = "mouse:x1"
+        app.mouse_listener = Mock()
+        x1_data = Mock(mouseData=(1 << 16))
+        x2_data = Mock(mouseData=(2 << 16))
+
+        app.mouse_event_filter(
+            0x20B,
+            x1_data,
+        )
+        app.mouse_listener.suppress_event.assert_called_once()
+
+        app.mouse_event_filter(
+            0x20B,
+            x2_data,
+        )
+        app.mouse_listener.suppress_event.assert_called_once()
+
+    def test_double_press_mode_requires_two_presses(self):
+        app = self.make_app("double_press")
+        with (
+            patch("groq_dictate.time.time", side_effect=(10.0, 10.2)),
+            patch("groq_dictate.log_info"),
+        ):
+            app.on_key_down()
+            app.start_recording_process.assert_not_called()
+            app.on_key_up()
+            app.on_key_down()
+        app.start_recording_process.assert_called_once()
 
 
 if __name__ == "__main__":
