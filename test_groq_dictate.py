@@ -12,18 +12,24 @@ from groq_dictate import (
     compress_to_flac,
     create_tray_image,
     display_activation_mode,
+    display_microphone_name,
     display_record_key,
     load_user_input_settings,
+    load_user_microphone_selection,
     load_user_record_key,
+    microphone_device_candidates,
     normalize_transcription,
     normalize_activation_mode,
     normalize_record_key,
+    open_microphone_stream,
     open_groq_keys_page,
     parse_api_keys,
     prompt_for_api_keys,
     punctuate_from_timestamps,
+    repair_microphone_name,
     run_flac_self_test,
     save_user_input_settings,
+    save_user_microphone_selection,
     save_user_record_key,
     sf,
     valid_api_keys,
@@ -64,6 +70,16 @@ class NormalizeTranscriptionTests(unittest.TestCase):
 
     def test_keeps_groq_and_grok_distinct(self):
         self.assertEqual(normalize_transcription("groq 和 grok"), "Groq 和 Grok.")
+
+    def test_recognizes_spoken_quota_variants(self):
+        self.assertEqual(
+            normalize_transcription("我的扣打快要用完了"),
+            "我的 quota 快要用完了.",
+        )
+        self.assertEqual(
+            normalize_transcription("quota 還很充足"),
+            "quota 還很充足.",
+        )
 
     def test_promotes_a_comma_after_an_excessively_long_sentence(self):
         source = ("字" * MAX_SENTENCE_CHARACTERS) + ",下一句"
@@ -244,6 +260,69 @@ class RecordingKeySettingsTests(unittest.TestCase):
                 ("menu", "double_press"),
             )
             self.assertEqual(normalize_activation_mode("unknown"), "double_press")
+
+
+class MicrophoneSettingsTests(unittest.TestCase):
+    class FakeAudio:
+        def __init__(self, fail_indexes=()):
+            self.fail_indexes = set(fail_indexes)
+
+        def get_default_input_device_info(self):
+            return {"index": 1}
+
+        def get_device_count(self):
+            return 3
+
+        def get_device_info_by_index(self, index):
+            return (
+                {"name": "Mic A", "maxInputChannels": 1, "hostApi": 0},
+                {"name": "Mic B", "maxInputChannels": 1, "hostApi": 0},
+                {"name": "Speaker", "maxInputChannels": 0, "hostApi": 0},
+            )[index]
+
+        def get_host_api_info_by_index(self, index):
+            return {"name": "MME", "type": 2}
+
+        def open(self, **kwargs):
+            index = kwargs["input_device_index"]
+            if index in self.fail_indexes:
+                raise OSError(f"device {index} failed")
+            return f"stream-{index}"
+
+    def test_repairs_big5_device_names(self):
+        self.assertEqual(
+            repair_microphone_name("³Á§J­· (Razer Seiren V2 X)"),
+            "麥克風 (Razer Seiren V2 X)",
+        )
+
+    def test_saves_microphone_without_losing_recording_control(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = os.path.join(temp_dir, "settings.json")
+            save_user_input_settings("f9", "hold", settings_path)
+            self.assertEqual(
+                save_user_microphone_selection("Razer Seiren V2 X", settings_path),
+                "Razer Seiren V2 X",
+            )
+            self.assertEqual(load_user_input_settings(settings_path), ("f9", "hold"))
+            self.assertEqual(
+                load_user_microphone_selection(settings_path),
+                "Razer Seiren V2 X",
+            )
+            self.assertEqual(
+                display_microphone_name(load_user_microphone_selection(settings_path)),
+                "Razer Seiren V2 X",
+            )
+
+    def test_selected_microphone_is_tried_before_default(self):
+        audio = self.FakeAudio()
+        candidates = microphone_device_candidates(audio, "Mic A")
+        self.assertEqual([device["index"] for device in candidates[:2]], [0, 1])
+
+    def test_failed_selected_microphone_falls_back_to_default(self):
+        audio = self.FakeAudio(fail_indexes=(0,))
+        stream, device = open_microphone_stream(audio, "Mic A")
+        self.assertEqual(stream, "stream-1")
+        self.assertEqual(device["name"], "Mic B")
 
 
 class RecordingActivationModeTests(unittest.TestCase):

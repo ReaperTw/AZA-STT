@@ -6,7 +6,7 @@ import threading
 import tempfile
 import wave
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox, simpledialog, ttk
 from threading import Event
 from datetime import datetime
 import subprocess
@@ -62,7 +62,7 @@ TECH_TERMS = (
     "GitHub", "GitHub Copilot", "Copilot", "Meta", "Llama", "xAI", "Grok",
     "Mistral", "Perplexity", "Hugging Face", "Cursor", "Codex", "Python",
     "JavaScript", "TypeScript", "React", "Next.js", "Node.js", "VS Code",
-    "Docker", "Kubernetes", "API", "GPU", "AI", "AGI", "LLM",
+    "Docker", "Kubernetes", "API", "quota", "GPU", "AI", "AGI", "LLM",
 )
 
 TRANSCRIPTION_PROMPT = (
@@ -110,6 +110,8 @@ TECH_TERM_CORRECTIONS = (
     (r"(?<![A-Za-z0-9])codex(?![A-Za-z0-9])", "Codex"),
     (r"(?<![A-Za-z0-9])cursor(?![A-Za-z0-9])", "Cursor"),
     (r"(?<![A-Za-z0-9])cuda(?![A-Za-z0-9])", "CUDA"),
+    (r"(?<![A-Za-z0-9])quota(?![A-Za-z0-9])", " quota "),
+    (r"扣打|扣達|扣达|闊塔|阔塔|庫塔|库塔", " quota "),
     (r"(?<![A-Za-z0-9])api(?![A-Za-z0-9])", "API"),
     (r"(?<![A-Za-z0-9])gpu(?![A-Za-z0-9])", "GPU"),
     (r"(?<![A-Za-z0-9])agi(?![A-Za-z0-9])", "AGI"),
@@ -597,33 +599,74 @@ def display_activation_mode(mode):
     }[normalize_activation_mode(mode)]
 
 
-def load_user_input_settings(path=USER_SETTINGS_FILE_PATH):
+def repair_microphone_name(name):
+    """Repair Traditional Chinese device names mangled by PortAudio's ANSI API."""
+    raw_name = str(name or "").strip()
+    if not raw_name:
+        return "未命名麥克風"
+    try:
+        repaired = raw_name.encode("latin1").decode("cp950").strip()
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return raw_name
+    return repaired or raw_name
+
+
+def normalize_microphone_name(name):
+    normalized = str(name or "").strip()
+    return normalized or None
+
+
+def display_microphone_name(name):
+    return normalize_microphone_name(name) or "系統預設"
+
+
+def _load_user_settings(path):
+    defaults = {
+        "record_key": DEFAULT_RECORD_KEY,
+        "activation_mode": DEFAULT_ACTIVATION_MODE,
+        "microphone_name": None,
+    }
     try:
         if not os.path.exists(path):
-            return DEFAULT_RECORD_KEY, DEFAULT_ACTIVATION_MODE
+            return defaults
         with open(path, "r", encoding="utf-8") as file:
             settings = json.load(file)
-        record_key = normalize_record_key(settings.get("record_key")) or DEFAULT_RECORD_KEY
-        activation_mode = normalize_activation_mode(settings.get("activation_mode"))
-        return record_key, activation_mode
+        return {
+            "record_key": (
+                normalize_record_key(settings.get("record_key"))
+                or DEFAULT_RECORD_KEY
+            ),
+            "activation_mode": normalize_activation_mode(
+                settings.get("activation_mode")
+            ),
+            "microphone_name": normalize_microphone_name(
+                settings.get("microphone_name")
+            ),
+        }
     except (OSError, ValueError, TypeError) as error:
         log_info(f"Failed to load user settings: {error}")
-        return DEFAULT_RECORD_KEY, DEFAULT_ACTIVATION_MODE
+        return defaults
+
+
+def load_user_input_settings(path=USER_SETTINGS_FILE_PATH):
+    settings = _load_user_settings(path)
+    return settings["record_key"], settings["activation_mode"]
 
 
 def load_user_record_key(path=USER_SETTINGS_FILE_PATH):
     return load_user_input_settings(path)[0]
 
 
-def save_user_input_settings(
-    record_key,
-    activation_mode=DEFAULT_ACTIVATION_MODE,
-    path=USER_SETTINGS_FILE_PATH,
-):
+def load_user_microphone_selection(path=USER_SETTINGS_FILE_PATH):
+    return _load_user_settings(path)["microphone_name"]
+
+
+def _save_user_settings(record_key, activation_mode, microphone_name, path):
     normalized = normalize_record_key(record_key)
     if not normalized:
         raise ValueError("Unsupported recording key.")
     normalized_mode = normalize_activation_mode(activation_mode)
+    normalized_microphone = normalize_microphone_name(microphone_name)
     settings_dir = os.path.dirname(path)
     if settings_dir:
         os.makedirs(settings_dir, exist_ok=True)
@@ -633,6 +676,7 @@ def save_user_input_settings(
             {
                 "record_key": normalized,
                 "activation_mode": normalized_mode,
+                "microphone_name": normalized_microphone,
             },
             file,
             ensure_ascii=False,
@@ -640,11 +684,153 @@ def save_user_input_settings(
         )
         file.write("\n")
     os.replace(temp_path, path)
+    return normalized, normalized_mode, normalized_microphone
+
+
+def save_user_input_settings(
+    record_key,
+    activation_mode=DEFAULT_ACTIVATION_MODE,
+    path=USER_SETTINGS_FILE_PATH,
+):
+    microphone_name = load_user_microphone_selection(path)
+    normalized, normalized_mode, _ = _save_user_settings(
+        record_key,
+        activation_mode,
+        microphone_name,
+        path,
+    )
     return normalized, normalized_mode
 
 
 def save_user_record_key(record_key, path=USER_SETTINGS_FILE_PATH):
     return save_user_input_settings(record_key, DEFAULT_ACTIVATION_MODE, path)[0]
+
+
+def save_user_microphone_selection(
+    microphone_name,
+    path=USER_SETTINGS_FILE_PATH,
+):
+    record_key, activation_mode = load_user_input_settings(path)
+    _, _, normalized_microphone = _save_user_settings(
+        record_key,
+        activation_mode,
+        microphone_name,
+        path,
+    )
+    return normalized_microphone
+
+
+def enumerate_input_devices(audio):
+    default_index = None
+    try:
+        default_index = int(audio.get_default_input_device_info()["index"])
+    except (IOError, OSError, KeyError, TypeError, ValueError):
+        pass
+
+    devices = []
+    for index in range(audio.get_device_count()):
+        try:
+            info = audio.get_device_info_by_index(index)
+            if int(info.get("maxInputChannels", 0)) < 1:
+                continue
+            host_index = int(info.get("hostApi", -1))
+            host_info = audio.get_host_api_info_by_index(host_index)
+            devices.append(
+                {
+                    "index": index,
+                    "name": repair_microphone_name(info.get("name")),
+                    "raw_name": str(info.get("name") or ""),
+                    "host_api": str(host_info.get("name") or ""),
+                    "host_type": int(host_info.get("type", -1)),
+                    "is_default": index == default_index,
+                }
+            )
+        except (IOError, OSError, KeyError, TypeError, ValueError):
+            continue
+    return devices
+
+
+def list_microphone_choices(audio=None):
+    owns_audio = audio is None
+    if owns_audio:
+        audio = pyaudio.PyAudio()
+    try:
+        choices = []
+        seen = set()
+        for device in enumerate_input_devices(audio):
+            name = device["name"]
+            if name.casefold().startswith("microsoft sound mapper"):
+                continue
+            key = name.casefold()
+            if key not in seen:
+                choices.append(name)
+                seen.add(key)
+        return choices
+    finally:
+        if owns_audio:
+            audio.terminate()
+
+
+def microphone_device_candidates(audio, microphone_name=None):
+    devices = enumerate_input_devices(audio)
+    selected = normalize_microphone_name(microphone_name)
+    host_priority = {
+        getattr(pyaudio, "paMME", 2): 0,
+        getattr(pyaudio, "paDirectSound", 1): 1,
+        getattr(pyaudio, "paWASAPI", 13): 2,
+        getattr(pyaudio, "paWDMKS", 11): 3,
+    }
+
+    def order(device):
+        return (
+            0 if device["is_default"] else 1,
+            host_priority.get(device["host_type"], 9),
+            device["index"],
+        )
+
+    selected_devices = []
+    if selected:
+        selected_devices = [
+            device
+            for device in devices
+            if device["name"].casefold() == selected.casefold()
+        ]
+    default_devices = [device for device in devices if device["is_default"]]
+    remaining = [
+        device
+        for device in devices
+        if device not in selected_devices and device not in default_devices
+    ]
+    return (
+        sorted(selected_devices, key=order)
+        + sorted(default_devices, key=order)
+        + sorted(remaining, key=order)
+    )
+
+
+def open_microphone_stream(audio, microphone_name=None):
+    candidates = microphone_device_candidates(audio, microphone_name)
+    if not candidates:
+        raise RuntimeError("Windows 找不到任何可用的麥克風。")
+
+    errors = []
+    for device in candidates:
+        try:
+            stream = audio.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                input_device_index=device["index"],
+                frames_per_buffer=CHUNK,
+            )
+            return stream, device
+        except Exception as error:
+            errors.append(f'{device["name"]}: {error}')
+    raise RuntimeError(
+        "無法開啟任何麥克風。"
+        + (f" 最後錯誤: {errors[-1]}" if errors else "")
+    )
 
 
 def save_user_api_keys(keys):
@@ -955,6 +1141,105 @@ class RecordKeySetupDialog(simpledialog.Dialog):
         super().cancel(event)
 
 
+class MicrophoneSetupDialog(simpledialog.Dialog):
+    SYSTEM_DEFAULT_LABEL = "系統預設 (建議)"
+
+    def __init__(self, parent, current_microphone):
+        self.current_microphone = normalize_microphone_name(current_microphone)
+        self.choice_map = {}
+        super().__init__(parent, title="AZA-STT 麥克風")
+
+    def body(self, master):
+        tk.Label(
+            master,
+            text="選擇錄音麥克風",
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        tk.Label(
+            master,
+            text=(
+                "建議保留「系統預設」。如果指定的裝置拔除或失效,\n"
+                "AZA-STT 會自動改用其他可用的麥克風。"
+            ),
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        self.microphone_var = tk.StringVar()
+        self.microphone_combo = ttk.Combobox(
+            master,
+            textvariable=self.microphone_var,
+            state="readonly",
+            width=48,
+        )
+        self.microphone_combo.grid(row=2, column=0, sticky="ew", padx=(0, 8))
+        tk.Button(
+            master,
+            text="重新掃描",
+            command=self.refresh_choices,
+        ).grid(row=2, column=1, sticky="e")
+
+        self.status_var = tk.StringVar(value="")
+        tk.Label(
+            master,
+            textvariable=self.status_var,
+            justify="left",
+            fg="#555555",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        master.grid_columnconfigure(0, weight=1)
+        self.refresh_choices()
+        return self.microphone_combo
+
+    def refresh_choices(self):
+        self.status_var.set("正在掃描麥克風…")
+        self.update_idletasks()
+        try:
+            microphones = list_microphone_choices()
+        except Exception as error:
+            microphones = []
+            self.status_var.set(f"無法讀取麥克風清單: {error}")
+        else:
+            self.status_var.set(f"找到 {len(microphones)} 個麥克風。")
+
+        self.choice_map = {self.SYSTEM_DEFAULT_LABEL: None}
+        for microphone in microphones:
+            self.choice_map[microphone] = microphone
+
+        selected_label = self.SYSTEM_DEFAULT_LABEL
+        if self.current_microphone:
+            if self.current_microphone not in self.choice_map:
+                missing_label = f"{self.current_microphone} (目前找不到)"
+                self.choice_map[missing_label] = self.current_microphone
+                selected_label = missing_label
+            else:
+                selected_label = self.current_microphone
+
+        values = list(self.choice_map)
+        self.microphone_combo.configure(values=values)
+        self.microphone_var.set(selected_label)
+
+    def buttonbox(self):
+        box = tk.Frame(self)
+        tk.Button(
+            box,
+            text="儲存",
+            width=10,
+            command=self.ok,
+            default=tk.ACTIVE,
+        ).pack(side="left", padx=5)
+        tk.Button(
+            box,
+            text="取消",
+            width=10,
+            command=self.cancel,
+        ).pack(side="left", padx=5)
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack(pady=(12, 10))
+
+    def apply(self):
+        self.result = (self.choice_map.get(self.microphone_var.get()),)
+
+
 def prompt_for_api_keys(parent=None):
     owns_root = parent is None
     dialog_parent = parent
@@ -1149,10 +1434,43 @@ def run_hotkey_self_test():
                 pass
 
 
+def run_microphone_self_test():
+    """Open and read the selected microphone without saving or uploading audio."""
+    audio = None
+    stream = None
+    try:
+        audio = pyaudio.PyAudio()
+        selected = load_user_microphone_selection()
+        stream, device = open_microphone_stream(audio, selected)
+        captured_bytes = sum(
+            len(stream.read(CHUNK, exception_on_overflow=False))
+            for _ in range(5)
+        )
+        log_info(
+            f'Microphone self-test passed: "{device["name"]}", '
+            f"{captured_bytes} bytes."
+        )
+        return captured_bytes > 0
+    except Exception as error:
+        log_info(f"Microphone self-test failed: {error}")
+        return False
+    finally:
+        if stream is not None:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+        if audio is not None:
+            audio.terminate()
+
+
 class GroqDictateApp:
     def __init__(self, instance_handle=None):
         self.instance_handle = instance_handle
         self.record_key, self.activation_mode = load_user_input_settings()
+        self.microphone_name = load_user_microphone_selection()
+        self.active_microphone_name = None
         self.api_keys = self.load_api_keys()
         if not self.api_keys:
             log_info("No API keys found. Opening first-run setup.")
@@ -1174,7 +1492,6 @@ class GroqDictateApp:
             print(f"OpenCC initialization failed: {e}")
             self.converter = None
 
-        self.p = pyaudio.PyAudio()
         self.frames = []
         self.is_recording = False
         self.recording_started_event = Event()
@@ -1358,8 +1675,26 @@ class GroqDictateApp:
 
     def record_thread(self):
         stream = None
+        audio = None
         try:
-            stream = self.p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+            # Refresh PortAudio for every recording. This avoids stale device
+            # indexes after a USB or Bluetooth microphone is unplugged.
+            audio = pyaudio.PyAudio()
+            stream, device = open_microphone_stream(audio, self.microphone_name)
+            self.active_microphone_name = device["name"]
+            if (
+                self.microphone_name
+                and device["name"].casefold() != self.microphone_name.casefold()
+            ):
+                log_info(
+                    f'Selected microphone "{self.microphone_name}" was unavailable. '
+                    f'Using "{device["name"]}" instead.'
+                )
+            else:
+                log_info(
+                    f'Recording from microphone "{device["name"]}" '
+                    f'({device["host_api"]}, device {device["index"]}).'
+                )
             self.recording_started_event.set()
 
             while self.is_recording and not self.stop_event.is_set():
@@ -1378,6 +1713,11 @@ class GroqDictateApp:
                     stream.close()
                 except Exception as e:
                     log_info(f"Failed to close microphone stream: {e}")
+            if audio is not None:
+                try:
+                    audio.terminate()
+                except Exception as error:
+                    log_info(f"Failed to terminate microphone session: {error}")
 
     def process_audio_workflow(self):
         start_time = time.time()
@@ -1431,7 +1771,7 @@ class GroqDictateApp:
             audio_data = b"".join(self.frames)
             with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(CHANNELS)
-                wf.setsampwidth(self.p.get_sample_size(FORMAT))
+                wf.setsampwidth(pyaudio.get_sample_size(FORMAT))
                 wf.setframerate(RATE)
                 wf.writeframes(audio_data)
             log_info(f"WAV saved successfully, size: {len(audio_data)} bytes")
@@ -1611,6 +1951,13 @@ class GroqDictateApp:
                 ),
                 self.enqueue_record_key_setup,
             ),
+            pystray.MenuItem(
+                lambda item: (
+                    "選擇麥克風 "
+                    f"(目前: {display_microphone_name(self.microphone_name)})"
+                ),
+                self.enqueue_microphone_setup,
+            ),
             pystray.MenuItem("重新輸入 Groq API key", self.enqueue_api_key_setup),
             pystray.MenuItem("開啟 Groq API Keys 網頁", self.enqueue_open_keys_page),
             pystray.Menu.SEPARATOR,
@@ -1666,6 +2013,9 @@ class GroqDictateApp:
     def enqueue_record_key_setup(self, icon=None, item=None):
         self.enqueue_ui_action(self.configure_record_key)
 
+    def enqueue_microphone_setup(self, icon=None, item=None):
+        self.enqueue_ui_action(self.configure_microphone)
+
     def enqueue_open_keys_page(self, icon=None, item=None):
         self.enqueue_ui_action(self.open_keys_page_from_tray)
 
@@ -1691,6 +2041,7 @@ class GroqDictateApp:
             "AZA-STT",
             f"{status}\n\n"
             f"{self.recording_instruction()},完成後會轉成文字。\n"
+            f"麥克風: {display_microphone_name(self.microphone_name)}\n"
             "程式關閉錄音提示後仍會留在 Windows 右下角通知區。\n\n"
             "若要完整關閉,請在 AZA-STT 圖示按右鍵,選擇「退出 AZA-STT」。",
             parent=self.root,
@@ -1745,6 +2096,45 @@ class GroqDictateApp:
             )
         finally:
             self.bind_record_key()
+
+    def configure_microphone(self):
+        if self.is_recording or self.is_processing_ui:
+            messagebox.showwarning(
+                "AZA-STT",
+                "請先完成目前的錄音或語音辨識,再更換麥克風。",
+                parent=self.root,
+            )
+            return
+
+        try:
+            dialog = MicrophoneSetupDialog(
+                self.root,
+                self.microphone_name,
+            )
+            selected = dialog.result
+            if not selected:
+                return
+            self.microphone_name = save_user_microphone_selection(selected[0])
+            self.active_microphone_name = None
+            log_info(
+                "Microphone selection changed to "
+                f'"{display_microphone_name(self.microphone_name)}".'
+            )
+            if self.tray_icon:
+                self.tray_icon.update_menu()
+            messagebox.showinfo(
+                "AZA-STT",
+                "麥克風設定已儲存。\n"
+                f"目前: {display_microphone_name(self.microphone_name)}",
+                parent=self.root,
+            )
+        except Exception as error:
+            log_info(f"Failed to change microphone: {error}")
+            messagebox.showerror(
+                "AZA-STT",
+                f"無法儲存麥克風設定:\n{error}",
+                parent=self.root,
+            )
 
     def configure_api_keys(self):
         if self.is_recording or self.is_processing_ui:
@@ -1841,10 +2231,6 @@ class GroqDictateApp:
                 self.tray_icon.stop()
             except Exception as e:
                 log_info(f"Notification area shutdown failed: {e}")
-        try:
-            self.p.terminate()
-        except Exception as e:
-            log_info(f"PyAudio shutdown failed: {e}")
         if self.instance_handle:
             release_single_instance(self.instance_handle)
             self.instance_handle = None
@@ -1864,6 +2250,9 @@ if __name__ == "__main__":
 
     if "--self-test-flac" in sys.argv:
         sys.exit(0 if run_flac_self_test() else 1)
+
+    if "--self-test-microphone" in sys.argv:
+        sys.exit(0 if run_microphone_self_test() else 1)
 
     if "--configure" in sys.argv:
         configured_keys = prompt_for_api_keys()
