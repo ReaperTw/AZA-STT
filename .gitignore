@@ -20,6 +20,8 @@ venv/
 build/
 dist/
 release/
+bin/
+archive/
 *.spec
 
 # Test and editor caches
