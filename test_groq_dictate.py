@@ -8,13 +8,18 @@ from groq_dictate import (
     FLAC_THRESHOLD_BYTES,
     GROQ_KEYS_URL,
     GroqDictateApp,
+    LANGUAGE_SIMPLIFIED,
+    LANGUAGE_TRADITIONAL,
     MAX_SENTENCE_CHARACTERS,
     compress_to_flac,
     create_tray_image,
+    detect_default_language_mode,
     display_activation_mode,
+    display_language_mode,
     display_microphone_name,
     display_record_key,
     load_user_input_settings,
+    load_user_language_mode,
     load_user_microphone_selection,
     load_user_record_key,
     microphone_device_candidates,
@@ -28,10 +33,14 @@ from groq_dictate import (
     punctuate_from_timestamps,
     repair_microphone_name,
     run_flac_self_test,
+    run_language_self_test,
     save_user_input_settings,
+    save_user_language_mode,
     save_user_microphone_selection,
     save_user_record_key,
     sf,
+    transcription_prompt,
+    ui_text,
     valid_api_keys,
 )
 
@@ -209,6 +218,62 @@ class TrayIconTests(unittest.TestCase):
                 self.assertEqual(image.mode, "RGBA")
                 self.assertEqual(image.size, (64, 64))
                 self.assertIsNotNone(image.getbbox())
+
+
+class LanguageSettingsTests(unittest.TestCase):
+    def test_simplified_ui_uses_mainland_terms(self):
+        self.assertEqual(
+            ui_text(
+                "程式會縮到通知區,可設定滑鼠與麥克風裝置。",
+                LANGUAGE_SIMPLIFIED,
+            ),
+            "程序会缩到系统托盘,可设置鼠标与麦克风设备。",
+        )
+        self.assertEqual(
+            ui_text("程式與滑鼠", LANGUAGE_TRADITIONAL),
+            "程式與滑鼠",
+        )
+        self.assertEqual(display_language_mode(LANGUAGE_SIMPLIFIED), "简体中文")
+
+    def test_prompts_request_the_selected_chinese_variant(self):
+        self.assertIn("简体中文", transcription_prompt(LANGUAGE_SIMPLIFIED))
+        self.assertIn("繁體中文", transcription_prompt(LANGUAGE_TRADITIONAL))
+        self.assertIn("quota", transcription_prompt(LANGUAGE_SIMPLIFIED))
+
+    def test_detects_mainland_and_taiwan_windows_locales(self):
+        with patch("groq_dictate.locale.getlocale", return_value=("zh_CN", "UTF-8")):
+            self.assertEqual(detect_default_language_mode(), LANGUAGE_SIMPLIFIED)
+        with patch("groq_dictate.locale.getlocale", return_value=("zh_TW", "UTF-8")):
+            self.assertEqual(detect_default_language_mode(), LANGUAGE_TRADITIONAL)
+
+    def test_saves_language_without_losing_other_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = os.path.join(temp_dir, "settings.json")
+            save_user_input_settings("f9", "hold", settings_path)
+            save_user_microphone_selection("Mic A", settings_path)
+            self.assertEqual(
+                save_user_language_mode(LANGUAGE_SIMPLIFIED, settings_path),
+                LANGUAGE_SIMPLIFIED,
+            )
+            self.assertEqual(
+                load_user_language_mode(settings_path),
+                LANGUAGE_SIMPLIFIED,
+            )
+            self.assertEqual(load_user_input_settings(settings_path), ("f9", "hold"))
+            self.assertEqual(load_user_microphone_selection(settings_path), "Mic A")
+
+    def test_output_converter_matches_selected_language(self):
+        app = GroqDictateApp.__new__(GroqDictateApp)
+        app.language_mode = LANGUAGE_SIMPLIFIED
+        app.set_output_converter()
+        self.assertEqual(app.prepare_transcription("這是腳本"), "这是脚本.")
+
+        app.language_mode = LANGUAGE_TRADITIONAL
+        app.set_output_converter()
+        self.assertEqual(app.prepare_transcription("这是脚本"), "這是腳本.")
+
+    def test_language_self_test_path(self):
+        self.assertTrue(run_language_self_test())
 
 
 class RecordingKeySettingsTests(unittest.TestCase):

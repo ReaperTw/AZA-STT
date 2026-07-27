@@ -14,6 +14,7 @@ import re
 import ctypes
 import json
 import logging
+import locale
 import queue
 import webbrowser
 from logging.handlers import RotatingFileHandler
@@ -65,11 +66,78 @@ TECH_TERMS = (
     "Docker", "Kubernetes", "API", "quota", "GPU", "AI", "AGI", "LLM",
 )
 
-TRANSCRIPTION_PROMPT = (
-    "繁體中文 AI 與軟體開發討論逐字稿。常用拼字: "
-    + ", ".join(TECH_TERMS)
-    + ". 使用半形標點,標點後保留一個空格,並依語意自然分句。"
+LANGUAGE_TRADITIONAL = "zh-TW"
+LANGUAGE_SIMPLIFIED = "zh-CN"
+LANGUAGE_MODES = (LANGUAGE_TRADITIONAL, LANGUAGE_SIMPLIFIED)
+_UI_CONVERTERS = {}
+SIMPLIFIED_UI_PHRASES = (
+    ("滑鼠", "鼠标"),
+    ("剪贴簿", "剪贴板"),
+    ("通知区", "系统托盘"),
+    ("辨识", "识别"),
+    ("游标", "光标"),
+    ("连按两下", "连续按两次"),
+    ("按一下", "按一次"),
+    ("目前", "当前"),
+    ("资料夹", "文件夹"),
+    ("原始码", "源代码"),
+    ("逐字稿", "转录稿"),
+    ("设定", "设置"),
+    ("程式", "程序"),
+    ("图示", "图标"),
+    ("档案", "文件"),
+    ("装置", "设备"),
+    ("讯息", "信息"),
+    ("连线", "连接"),
 )
+
+
+def normalize_language_mode(mode):
+    normalized = str(mode or "").strip()
+    return normalized if normalized in LANGUAGE_MODES else None
+
+
+def detect_default_language_mode():
+    try:
+        locale_name = locale.getlocale()[0] or ""
+    except (ValueError, TypeError):
+        locale_name = ""
+    normalized = locale_name.replace("_", "-").lower()
+    if normalized.startswith(("zh-cn", "zh-sg", "zh-hans")):
+        return LANGUAGE_SIMPLIFIED
+    return LANGUAGE_TRADITIONAL
+
+
+def ui_text(text, language_mode=LANGUAGE_TRADITIONAL):
+    value = str(text)
+    if normalize_language_mode(language_mode) != LANGUAGE_SIMPLIFIED:
+        return value
+    converter = _UI_CONVERTERS.get(LANGUAGE_SIMPLIFIED)
+    if converter is None:
+        converter = opencc.OpenCC("t2s")
+        _UI_CONVERTERS[LANGUAGE_SIMPLIFIED] = converter
+    value = converter.convert(value)
+    for source, replacement in SIMPLIFIED_UI_PHRASES:
+        value = value.replace(source, replacement)
+    return value
+
+
+def display_language_mode(mode):
+    return (
+        "简体中文"
+        if normalize_language_mode(mode) == LANGUAGE_SIMPLIFIED
+        else "繁體中文"
+    )
+
+
+def transcription_prompt(language_mode):
+    if normalize_language_mode(language_mode) == LANGUAGE_SIMPLIFIED:
+        description = "简体中文 AI 与软件开发讨论转录稿。常用拼写: "
+        instruction = ". 使用半角标点,标点后保留一个空格,并按语义自然分句。"
+    else:
+        description = "繁體中文 AI 與軟體開發討論逐字稿。常用拼字: "
+        instruction = ". 使用半形標點,標點後保留一個空格,並依語意自然分句。"
+    return description + ", ".join(TECH_TERMS) + instruction
 
 # Longer or more specific names must run before their shorter forms.
 TECH_TERM_CORRECTIONS = (
@@ -574,12 +642,12 @@ def normalize_activation_mode(mode):
     return normalized if normalized in ACTIVATION_MODES else DEFAULT_ACTIVATION_MODE
 
 
-def display_record_key(key):
+def display_record_key(key, language_mode=LANGUAGE_TRADITIONAL):
     normalized = normalize_record_key(key) or DEFAULT_RECORD_KEY
     if normalized == "mouse:x1":
-        return "滑鼠側鍵 1 (上一頁)"
+        return ui_text("滑鼠側鍵 1 (上一頁)", language_mode)
     if normalized == "mouse:x2":
-        return "滑鼠側鍵 2 (下一頁)"
+        return ui_text("滑鼠側鍵 2 (下一頁)", language_mode)
     if normalized.startswith("f") and normalized[1:].isdigit():
         return normalized.upper()
     return {
@@ -591,12 +659,12 @@ def display_record_key(key):
     }.get(normalized, normalized.title())
 
 
-def display_activation_mode(mode):
-    return {
+def display_activation_mode(mode, language_mode=LANGUAGE_TRADITIONAL):
+    return ui_text({
         "double_press": "連按兩下開始,按一下停止",
         "single_press": "按一下開始,再按一下停止",
         "hold": "按住時錄音,放開停止",
-    }[normalize_activation_mode(mode)]
+    }[normalize_activation_mode(mode)], language_mode)
 
 
 def repair_microphone_name(name):
@@ -616,8 +684,8 @@ def normalize_microphone_name(name):
     return normalized or None
 
 
-def display_microphone_name(name):
-    return normalize_microphone_name(name) or "系統預設"
+def display_microphone_name(name, language_mode=LANGUAGE_TRADITIONAL):
+    return ui_text(normalize_microphone_name(name) or "系統預設", language_mode)
 
 
 def _load_user_settings(path):
@@ -625,6 +693,7 @@ def _load_user_settings(path):
         "record_key": DEFAULT_RECORD_KEY,
         "activation_mode": DEFAULT_ACTIVATION_MODE,
         "microphone_name": None,
+        "language_mode": detect_default_language_mode(),
     }
     try:
         if not os.path.exists(path):
@@ -641,6 +710,10 @@ def _load_user_settings(path):
             ),
             "microphone_name": normalize_microphone_name(
                 settings.get("microphone_name")
+            ),
+            "language_mode": (
+                normalize_language_mode(settings.get("language_mode"))
+                or detect_default_language_mode()
             ),
         }
     except (OSError, ValueError, TypeError) as error:
@@ -661,12 +734,26 @@ def load_user_microphone_selection(path=USER_SETTINGS_FILE_PATH):
     return _load_user_settings(path)["microphone_name"]
 
 
-def _save_user_settings(record_key, activation_mode, microphone_name, path):
+def load_user_language_mode(path=USER_SETTINGS_FILE_PATH):
+    return _load_user_settings(path)["language_mode"]
+
+
+def _save_user_settings(
+    record_key,
+    activation_mode,
+    microphone_name,
+    language_mode,
+    path,
+):
     normalized = normalize_record_key(record_key)
     if not normalized:
         raise ValueError("Unsupported recording key.")
     normalized_mode = normalize_activation_mode(activation_mode)
     normalized_microphone = normalize_microphone_name(microphone_name)
+    normalized_language = (
+        normalize_language_mode(language_mode)
+        or detect_default_language_mode()
+    )
     settings_dir = os.path.dirname(path)
     if settings_dir:
         os.makedirs(settings_dir, exist_ok=True)
@@ -677,6 +764,7 @@ def _save_user_settings(record_key, activation_mode, microphone_name, path):
                 "record_key": normalized,
                 "activation_mode": normalized_mode,
                 "microphone_name": normalized_microphone,
+                "language_mode": normalized_language,
             },
             file,
             ensure_ascii=False,
@@ -684,7 +772,12 @@ def _save_user_settings(record_key, activation_mode, microphone_name, path):
         )
         file.write("\n")
     os.replace(temp_path, path)
-    return normalized, normalized_mode, normalized_microphone
+    return (
+        normalized,
+        normalized_mode,
+        normalized_microphone,
+        normalized_language,
+    )
 
 
 def save_user_input_settings(
@@ -692,11 +785,12 @@ def save_user_input_settings(
     activation_mode=DEFAULT_ACTIVATION_MODE,
     path=USER_SETTINGS_FILE_PATH,
 ):
-    microphone_name = load_user_microphone_selection(path)
-    normalized, normalized_mode, _ = _save_user_settings(
+    current = _load_user_settings(path)
+    normalized, normalized_mode, _, _ = _save_user_settings(
         record_key,
         activation_mode,
-        microphone_name,
+        current["microphone_name"],
+        current["language_mode"],
         path,
     )
     return normalized, normalized_mode
@@ -710,14 +804,30 @@ def save_user_microphone_selection(
     microphone_name,
     path=USER_SETTINGS_FILE_PATH,
 ):
-    record_key, activation_mode = load_user_input_settings(path)
-    _, _, normalized_microphone = _save_user_settings(
-        record_key,
-        activation_mode,
+    current = _load_user_settings(path)
+    _, _, normalized_microphone, _ = _save_user_settings(
+        current["record_key"],
+        current["activation_mode"],
         microphone_name,
+        current["language_mode"],
         path,
     )
     return normalized_microphone
+
+
+def save_user_language_mode(
+    language_mode,
+    path=USER_SETTINGS_FILE_PATH,
+):
+    current = _load_user_settings(path)
+    _, _, _, normalized_language = _save_user_settings(
+        current["record_key"],
+        current["activation_mode"],
+        current["microphone_name"],
+        language_mode,
+        path,
+    )
+    return normalized_language
 
 
 def enumerate_input_devices(audio):
@@ -868,16 +978,25 @@ def open_groq_keys_page():
 
 
 class ApiKeySetupDialog(simpledialog.Dialog):
+    def __init__(self, parent, language_mode=LANGUAGE_TRADITIONAL):
+        self.language_mode = (
+            normalize_language_mode(language_mode) or LANGUAGE_TRADITIONAL
+        )
+        super().__init__(parent, title=self.ui("AZA-STT 設定"))
+
+    def ui(self, text):
+        return ui_text(text, self.language_mode)
+
     def body(self, master):
-        self.title("AZA-STT 設定")
+        self.title(self.ui("AZA-STT 設定"))
         tk.Label(
             master,
-            text="請貼上 Groq API key",
+            text=self.ui("請貼上 Groq API key"),
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
         tk.Label(
             master,
-            text=(
+            text=self.ui(
                 "多組 key 可使用逗號、分號或空格分隔。\n"
                 "如果還沒有 key，請點下方按鈕前往 Groq 申請。"
             ),
@@ -887,7 +1006,7 @@ class ApiKeySetupDialog(simpledialog.Dialog):
         self.key_entry.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         tk.Label(
             master,
-            text=f"只會儲存在這台電腦：\n{USER_KEY_FILE_PATH}",
+            text=self.ui(f"只會儲存在這台電腦：\n{USER_KEY_FILE_PATH}"),
             justify="left",
             fg="#555555",
         ).grid(row=3, column=0, sticky="w")
@@ -898,19 +1017,19 @@ class ApiKeySetupDialog(simpledialog.Dialog):
         box = tk.Frame(self)
         tk.Button(
             box,
-            text="開啟 Groq API Keys",
+            text=self.ui("開啟 Groq API Keys"),
             command=self.open_keys_page,
         ).pack(side="left", padx=(0, 18))
         tk.Button(
             box,
-            text="儲存",
+            text=self.ui("儲存"),
             width=10,
             command=self.ok,
             default=tk.ACTIVE,
         ).pack(side="left", padx=5)
         tk.Button(
             box,
-            text="取消",
+            text=self.ui("取消"),
             width=10,
             command=self.cancel,
         ).pack(side="left", padx=5)
@@ -925,7 +1044,7 @@ class ApiKeySetupDialog(simpledialog.Dialog):
         except Exception as error:
             messagebox.showerror(
                 "AZA-STT",
-                f"無法開啟 Groq 網頁：\n{error}\n\n{GROQ_KEYS_URL}",
+                self.ui(f"無法開啟 Groq 網頁：\n{error}\n\n{GROQ_KEYS_URL}"),
                 parent=self,
             )
 
@@ -934,7 +1053,7 @@ class ApiKeySetupDialog(simpledialog.Dialog):
         if not valid_api_keys(keys):
             messagebox.showerror(
                 "AZA-STT",
-                "API key 格式不正確。Groq API key 應以 gsk_ 開頭。",
+                self.ui("API key 格式不正確。Groq API key 應以 gsk_ 開頭。"),
                 parent=self,
             )
             return False
@@ -946,7 +1065,16 @@ class ApiKeySetupDialog(simpledialog.Dialog):
 
 
 class RecordKeySetupDialog(simpledialog.Dialog):
-    def __init__(self, parent, current_key, current_mode):
+    def __init__(
+        self,
+        parent,
+        current_key,
+        current_mode,
+        language_mode=LANGUAGE_TRADITIONAL,
+    ):
+        self.language_mode = (
+            normalize_language_mode(language_mode) or LANGUAGE_TRADITIONAL
+        )
         self.current_key = normalize_record_key(current_key) or DEFAULT_RECORD_KEY
         self.selected_key = self.current_key
         self.current_mode = normalize_activation_mode(current_mode)
@@ -954,17 +1082,20 @@ class RecordKeySetupDialog(simpledialog.Dialog):
         self.capture_mouse_listener = None
         self.capture_queue = queue.Queue()
         self.capture_poll_id = None
-        super().__init__(parent, title="AZA-STT 錄音控制")
+        super().__init__(parent, title=self.ui("AZA-STT 錄音控制"))
+
+    def ui(self, text):
+        return ui_text(text, self.language_mode)
 
     def body(self, master):
         tk.Label(
             master,
-            text="設定錄音控制",
+            text=self.ui("設定錄音控制"),
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
         tk.Label(
             master,
-            text=(
+            text=self.ui(
                 "可以使用任何鍵盤按鍵,也可以使用滑鼠側鍵。\n"
                 "選中的按鍵會由 AZA-STT 攔截,原本功能可能無法使用。"
             ),
@@ -972,7 +1103,10 @@ class RecordKeySetupDialog(simpledialog.Dialog):
         ).grid(row=1, column=0, sticky="w", pady=(0, 10))
 
         self.selected_var = tk.StringVar(
-            value=f"目前按鍵: {display_record_key(self.selected_key)}"
+            value=self.ui(
+                f"目前按鍵: "
+                f"{display_record_key(self.selected_key, self.language_mode)}"
+            )
         )
         tk.Label(
             master,
@@ -983,7 +1117,7 @@ class RecordKeySetupDialog(simpledialog.Dialog):
 
         self.capture_button = tk.Button(
             master,
-            text="按下新的鍵盤鍵或滑鼠側鍵",
+            text=self.ui("按下新的鍵盤鍵或滑鼠側鍵"),
             width=28,
             command=self.begin_capture,
         )
@@ -997,13 +1131,18 @@ class RecordKeySetupDialog(simpledialog.Dialog):
             fg="#555555",
         ).grid(row=4, column=0, sticky="w", pady=(6, 10))
 
-        mode_box = tk.LabelFrame(master, text="錄音方式", padx=10, pady=6)
+        mode_box = tk.LabelFrame(
+            master,
+            text=self.ui("錄音方式"),
+            padx=10,
+            pady=6,
+        )
         mode_box.grid(row=5, column=0, sticky="ew")
         self.mode_var = tk.StringVar(value=self.current_mode)
         for mode in ACTIVATION_MODES:
             tk.Radiobutton(
                 mode_box,
-                text=display_activation_mode(mode),
+                text=display_activation_mode(mode, self.language_mode),
                 variable=self.mode_var,
                 value=mode,
                 anchor="w",
@@ -1016,19 +1155,19 @@ class RecordKeySetupDialog(simpledialog.Dialog):
         box = tk.Frame(self)
         tk.Button(
             box,
-            text="恢復預設",
+            text=self.ui("恢復預設"),
             command=self.select_default,
         ).pack(side="left", padx=(0, 18))
         tk.Button(
             box,
-            text="儲存",
+            text=self.ui("儲存"),
             width=10,
             command=self.ok,
             default=tk.ACTIVE,
         ).pack(side="left", padx=5)
         tk.Button(
             box,
-            text="取消",
+            text=self.ui("取消"),
             width=10,
             command=self.cancel,
         ).pack(side="left", padx=5)
@@ -1038,7 +1177,7 @@ class RecordKeySetupDialog(simpledialog.Dialog):
 
     def begin_capture(self):
         self.stop_capture()
-        self.capture_status_var.set("等待鍵盤按鍵或滑鼠側鍵中…")
+        self.capture_status_var.set(self.ui("等待鍵盤按鍵或滑鼠側鍵中…"))
         self.capture_button.config(state=tk.DISABLED)
         try:
             self.capture_keyboard_hook = keyboard.hook(
@@ -1052,7 +1191,9 @@ class RecordKeySetupDialog(simpledialog.Dialog):
             self.capture_mouse_listener.start()
         except Exception as error:
             self.stop_capture()
-            self.capture_status_var.set(f"無法開始偵測輸入: {error}")
+            self.capture_status_var.set(
+                self.ui(f"無法開始偵測輸入: {error}")
+            )
             return
         self.capture_poll_id = self.after(50, self.poll_capture_queue)
 
@@ -1096,18 +1237,29 @@ class RecordKeySetupDialog(simpledialog.Dialog):
         self.stop_capture()
         normalized = normalize_record_key(key)
         if not normalized:
-            self.capture_status_var.set(f"無法辨識「{key}」,請再試一次。")
+            self.capture_status_var.set(
+                self.ui(f"無法辨識「{key}」,請再試一次。")
+            )
             return
         self.selected_key = normalized
-        self.selected_var.set(f"新按鍵: {display_record_key(normalized)}")
-        self.capture_status_var.set("按「儲存」後立即生效,不需要重新啟動。")
+        self.selected_var.set(
+            self.ui(
+                f"新按鍵: "
+                f"{display_record_key(normalized, self.language_mode)}"
+            )
+        )
+        self.capture_status_var.set(
+            self.ui("按「儲存」後立即生效,不需要重新啟動。")
+        )
 
     def select_default(self):
         self.stop_capture()
         self.selected_key = DEFAULT_RECORD_KEY
         self.mode_var.set(DEFAULT_ACTIVATION_MODE)
-        self.selected_var.set("新按鍵: Menu")
-        self.capture_status_var.set("已恢復預設按鍵與錄音方式。")
+        self.selected_var.set(self.ui("新按鍵: Menu"))
+        self.capture_status_var.set(
+            self.ui("已恢復預設按鍵與錄音方式。")
+        )
 
     def stop_capture(self):
         if self.capture_poll_id is not None:
@@ -1144,20 +1296,31 @@ class RecordKeySetupDialog(simpledialog.Dialog):
 class MicrophoneSetupDialog(simpledialog.Dialog):
     SYSTEM_DEFAULT_LABEL = "系統預設 (建議)"
 
-    def __init__(self, parent, current_microphone):
+    def __init__(
+        self,
+        parent,
+        current_microphone,
+        language_mode=LANGUAGE_TRADITIONAL,
+    ):
+        self.language_mode = (
+            normalize_language_mode(language_mode) or LANGUAGE_TRADITIONAL
+        )
         self.current_microphone = normalize_microphone_name(current_microphone)
         self.choice_map = {}
-        super().__init__(parent, title="AZA-STT 麥克風")
+        super().__init__(parent, title=self.ui("AZA-STT 麥克風"))
+
+    def ui(self, text):
+        return ui_text(text, self.language_mode)
 
     def body(self, master):
         tk.Label(
             master,
-            text="選擇錄音麥克風",
+            text=self.ui("選擇錄音麥克風"),
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         tk.Label(
             master,
-            text=(
+            text=self.ui(
                 "建議保留「系統預設」。如果指定的裝置拔除或失效,\n"
                 "AZA-STT 會自動改用其他可用的麥克風。"
             ),
@@ -1174,7 +1337,7 @@ class MicrophoneSetupDialog(simpledialog.Dialog):
         self.microphone_combo.grid(row=2, column=0, sticky="ew", padx=(0, 8))
         tk.Button(
             master,
-            text="重新掃描",
+            text=self.ui("重新掃描"),
             command=self.refresh_choices,
         ).grid(row=2, column=1, sticky="e")
 
@@ -1190,28 +1353,36 @@ class MicrophoneSetupDialog(simpledialog.Dialog):
         return self.microphone_combo
 
     def refresh_choices(self):
-        self.status_var.set("正在掃描麥克風…")
+        self.status_var.set(self.ui("正在掃描麥克風…"))
         self.update_idletasks()
         try:
             microphones = list_microphone_choices()
         except Exception as error:
             microphones = []
-            self.status_var.set(f"無法讀取麥克風清單: {error}")
+            self.status_var.set(
+                self.ui(f"無法讀取麥克風清單: {error}")
+            )
         else:
-            self.status_var.set(f"找到 {len(microphones)} 個麥克風。")
+            self.status_var.set(
+                self.ui(f"找到 {len(microphones)} 個麥克風。")
+            )
 
-        self.choice_map = {self.SYSTEM_DEFAULT_LABEL: None}
+        system_default_label = self.ui(self.SYSTEM_DEFAULT_LABEL)
+        self.choice_map = {system_default_label: None}
         for microphone in microphones:
-            self.choice_map[microphone] = microphone
+            self.choice_map[self.ui(microphone)] = microphone
 
-        selected_label = self.SYSTEM_DEFAULT_LABEL
+        selected_label = system_default_label
         if self.current_microphone:
-            if self.current_microphone not in self.choice_map:
-                missing_label = f"{self.current_microphone} (目前找不到)"
+            localized_current = self.ui(self.current_microphone)
+            if localized_current not in self.choice_map:
+                missing_label = self.ui(
+                    f"{self.current_microphone} (目前找不到)"
+                )
                 self.choice_map[missing_label] = self.current_microphone
                 selected_label = missing_label
             else:
-                selected_label = self.current_microphone
+                selected_label = localized_current
 
         values = list(self.choice_map)
         self.microphone_combo.configure(values=values)
@@ -1221,14 +1392,14 @@ class MicrophoneSetupDialog(simpledialog.Dialog):
         box = tk.Frame(self)
         tk.Button(
             box,
-            text="儲存",
+            text=self.ui("儲存"),
             width=10,
             command=self.ok,
             default=tk.ACTIVE,
         ).pack(side="left", padx=5)
         tk.Button(
             box,
-            text="取消",
+            text=self.ui("取消"),
             width=10,
             command=self.cancel,
         ).pack(side="left", padx=5)
@@ -1240,7 +1411,76 @@ class MicrophoneSetupDialog(simpledialog.Dialog):
         self.result = (self.choice_map.get(self.microphone_var.get()),)
 
 
-def prompt_for_api_keys(parent=None):
+class LanguageSetupDialog(simpledialog.Dialog):
+    def __init__(self, parent, current_language):
+        self.current_language = (
+            normalize_language_mode(current_language)
+            or LANGUAGE_TRADITIONAL
+        )
+        super().__init__(parent, title="AZA-STT 語言 / 语言")
+
+    def ui(self, text):
+        return ui_text(text, self.current_language)
+
+    def body(self, master):
+        tk.Label(
+            master,
+            text="語言與輸出 / 语言与输出",
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        tk.Label(
+            master,
+            text=self.ui(
+                "切換後,設定介面、通知區選單與辨識結果會一起變更。"
+            ),
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
+        self.language_var = tk.StringVar(value=self.current_language)
+        tk.Radiobutton(
+            master,
+            text="繁體中文",
+            variable=self.language_var,
+            value=LANGUAGE_TRADITIONAL,
+            anchor="w",
+        ).grid(row=2, column=0, sticky="w")
+        tk.Radiobutton(
+            master,
+            text="简体中文",
+            variable=self.language_var,
+            value=LANGUAGE_SIMPLIFIED,
+            anchor="w",
+        ).grid(row=3, column=0, sticky="w")
+        master.grid_columnconfigure(0, weight=1)
+        return None
+
+    def buttonbox(self):
+        box = tk.Frame(self)
+        tk.Button(
+            box,
+            text=self.ui("儲存"),
+            width=10,
+            command=self.ok,
+            default=tk.ACTIVE,
+        ).pack(side="left", padx=5)
+        tk.Button(
+            box,
+            text=self.ui("取消"),
+            width=10,
+            command=self.cancel,
+        ).pack(side="left", padx=5)
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack(pady=(12, 10))
+
+    def apply(self):
+        self.result = normalize_language_mode(self.language_var.get())
+
+
+def prompt_for_api_keys(parent=None, language_mode=None):
+    language_mode = (
+        normalize_language_mode(language_mode)
+        or load_user_language_mode()
+    )
     owns_root = parent is None
     dialog_parent = parent
     if owns_root:
@@ -1249,7 +1489,7 @@ def prompt_for_api_keys(parent=None):
         dialog_parent.attributes("-topmost", True)
 
     try:
-        dialog = ApiKeySetupDialog(dialog_parent)
+        dialog = ApiKeySetupDialog(dialog_parent, language_mode=language_mode)
         keys = dialog.result or []
         if not keys:
             return []
@@ -1259,14 +1499,14 @@ def prompt_for_api_keys(parent=None):
         except Exception as error:
             messagebox.showerror(
                 "AZA-STT",
-                f"無法儲存 API key：\n{error}",
+                ui_text(f"無法儲存 API key：\n{error}", language_mode),
                 parent=dialog_parent,
             )
             return []
 
         messagebox.showinfo(
             "AZA-STT",
-            "Groq API key 已儲存。",
+            ui_text("Groq API key 已儲存。", language_mode),
             parent=dialog_parent,
         )
         return keys
@@ -1465,16 +1705,44 @@ def run_microphone_self_test():
             audio.terminate()
 
 
+def run_language_self_test():
+    try:
+        simplified_ui = ui_text(
+            "程式會縮到通知區,可設定滑鼠與麥克風裝置。",
+            LANGUAGE_SIMPLIFIED,
+        )
+        expected_terms = ("程序", "系统托盘", "鼠标", "麦克风", "设备")
+        if not all(term in simplified_ui for term in expected_terms):
+            raise RuntimeError(f"Simplified UI conversion mismatch: {simplified_ui}")
+
+        simplified_converter = opencc.OpenCC("t2s")
+        if simplified_converter.convert("這是腳本") != "这是脚本":
+            raise RuntimeError("Simplified transcription conversion failed.")
+        if "简体中文" not in transcription_prompt(LANGUAGE_SIMPLIFIED):
+            raise RuntimeError("Simplified transcription prompt is missing.")
+        if "繁體中文" not in transcription_prompt(LANGUAGE_TRADITIONAL):
+            raise RuntimeError("Traditional transcription prompt is missing.")
+
+        log_info("Language self-test passed.")
+        return True
+    except Exception as error:
+        log_info(f"Language self-test failed: {error}")
+        return False
+
+
 class GroqDictateApp:
     def __init__(self, instance_handle=None):
         self.instance_handle = instance_handle
+        self.language_mode = load_user_language_mode()
         self.record_key, self.activation_mode = load_user_input_settings()
         self.microphone_name = load_user_microphone_selection()
         self.active_microphone_name = None
         self.api_keys = self.load_api_keys()
         if not self.api_keys:
             log_info("No API keys found. Opening first-run setup.")
-            self.api_keys = prompt_for_api_keys()
+            self.api_keys = prompt_for_api_keys(
+                language_mode=self.language_mode
+            )
             if not self.api_keys:
                 log_info("API key setup was cancelled.")
                 sys.exit(1)
@@ -1484,13 +1752,8 @@ class GroqDictateApp:
         self.current_model_index = 0
         self.client = Groq(api_key=self.api_keys[self.current_key_index], timeout=API_TIMEOUT_SECONDS)
         log_info(f"Groq API client initialized with key #{self.current_key_index + 1}")
-        try:
-            # Convert simplified characters only. Avoid s2twp because its
-            # regional phrase conversion changes words such as 腳本/指令碼.
-            self.converter = opencc.OpenCC('s2t')
-        except Exception as e:
-            print(f"OpenCC initialization failed: {e}")
-            self.converter = None
+        self.converter = None
+        self.set_output_converter()
 
         self.frames = []
         self.is_recording = False
@@ -1513,6 +1776,23 @@ class GroqDictateApp:
         self.setup_tray_icon()
         self.bind_record_key()
 
+    def ui(self, text):
+        return ui_text(text, self.language_mode)
+
+    def set_output_converter(self):
+        try:
+            # Character conversion only. Avoid regional phrase conversion so
+            # vocabulary such as 腳本/指令碼 remains faithful to the speaker.
+            config = (
+                "t2s"
+                if self.language_mode == LANGUAGE_SIMPLIFIED
+                else "s2t"
+            )
+            self.converter = opencc.OpenCC(config)
+        except Exception as error:
+            log_info(f"OpenCC initialization failed: {error}")
+            self.converter = None
+
     def load_api_keys(self):
         try:
             content = os.environ.get("GROQ_API_KEYS", "")
@@ -1527,16 +1807,25 @@ class GroqDictateApp:
             return []
 
     def recording_instruction(self):
-        key_name = display_record_key(self.record_key)
+        key_name = display_record_key(
+            self.record_key,
+            self.language_mode,
+        )
         return {
             "double_press": (
-                f"連按兩下 {key_name} 開始錄音,錄音中再按一下停止"
+                self.ui(
+                    f"連按兩下 {key_name} 開始錄音,"
+                    "錄音中再按一下停止"
+                )
             ),
             "single_press": (
-                f"按一下 {key_name} 開始錄音,再按一下停止"
+                self.ui(
+                    f"按一下 {key_name} 開始錄音,"
+                    "再按一下停止"
+                )
             ),
             "hold": (
-                f"按住 {key_name} 錄音,放開後停止"
+                self.ui(f"按住 {key_name} 錄音,放開後停止")
             ),
         }[normalize_activation_mode(self.activation_mode)]
 
@@ -1830,7 +2119,7 @@ class GroqDictateApp:
                             response_format="verbose_json",
                             timestamp_granularities=["word", "segment"],
                             language="zh",
-                            prompt=TRANSCRIPTION_PROMPT,
+                            prompt=transcription_prompt(self.language_mode),
                             temperature=0.0,
                         )
                     api_elapsed = time.time() - api_start
@@ -1917,7 +2206,10 @@ class GroqDictateApp:
         self.hide_timer_id = None
 
         self.popup_menu = tk.Menu(self.root, tearoff=0)
-        self.popup_menu.add_command(label="退出 AZA-STT", command=self.quit_app)
+        self.popup_menu.add_command(
+            label=self.ui("退出 AZA-STT"),
+            command=self.quit_app,
+        )
         self.canvas.bind("<Button-3>", self.show_popup_menu)
 
         self.root.withdraw()
@@ -1946,27 +2238,49 @@ class GroqDictateApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 lambda item: (
-                    "設定錄音控制 "
-                    f"(目前: {display_record_key(self.record_key)})"
+                    self.ui("設定錄音控制 ")
+                    + self.ui(
+                        f"(目前: "
+                        f"{display_record_key(self.record_key, self.language_mode)})"
+                    )
                 ),
                 self.enqueue_record_key_setup,
             ),
             pystray.MenuItem(
                 lambda item: (
-                    "選擇麥克風 "
-                    f"(目前: {display_microphone_name(self.microphone_name)})"
+                    self.ui("選擇麥克風 ")
+                    + self.ui(
+                        f"(目前: "
+                        f"{display_microphone_name(self.microphone_name, self.language_mode)})"
+                    )
                 ),
                 self.enqueue_microphone_setup,
             ),
-            pystray.MenuItem("重新輸入 Groq API key", self.enqueue_api_key_setup),
-            pystray.MenuItem("開啟 Groq API Keys 網頁", self.enqueue_open_keys_page),
+            pystray.MenuItem(
+                lambda item: (
+                    "語言 / 语言 "
+                    f"({display_language_mode(self.language_mode)})"
+                ),
+                self.enqueue_language_setup,
+            ),
+            pystray.MenuItem(
+                lambda item: self.ui("重新輸入 Groq API key"),
+                self.enqueue_api_key_setup,
+            ),
+            pystray.MenuItem(
+                lambda item: self.ui("開啟 Groq API Keys 網頁"),
+                self.enqueue_open_keys_page,
+            ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("退出 AZA-STT", self.enqueue_quit),
+            pystray.MenuItem(
+                lambda item: self.ui("退出 AZA-STT"),
+                self.enqueue_quit,
+            ),
         )
         self.tray_icon = pystray.Icon(
             "AZA-STT",
             create_tray_image(),
-            "AZA-STT - 背景執行中",
+            self.ui("AZA-STT - 背景執行中"),
             menu,
         )
         self.tray_thread = threading.Thread(
@@ -1986,19 +2300,19 @@ class GroqDictateApp:
         icon.visible = True
         try:
             icon.notify(
-                "AZA-STT 已縮到 Windows 右下角通知區。\n"
-                f"{self.recording_instruction()}。",
-                "AZA-STT 正在背景執行",
+                self.ui("AZA-STT 已縮到 Windows 右下角通知區。\n")
+                + f"{self.recording_instruction()}.",
+                self.ui("AZA-STT 正在背景執行"),
             )
         except Exception as error:
             log_info(f"Startup tray notification failed: {error}")
 
     def tray_status_text(self):
         if self.is_recording:
-            return "AZA-STT - 錄音中"
+            return self.ui("AZA-STT - 錄音中")
         if self.is_processing_ui:
-            return "AZA-STT - 辨識中"
-        return "AZA-STT - 背景執行中"
+            return self.ui("AZA-STT - 辨識中")
+        return self.ui("AZA-STT - 背景執行中")
 
     def enqueue_ui_action(self, action):
         if not self.is_quitting:
@@ -2015,6 +2329,9 @@ class GroqDictateApp:
 
     def enqueue_microphone_setup(self, icon=None, item=None):
         self.enqueue_ui_action(self.configure_microphone)
+
+    def enqueue_language_setup(self, icon=None, item=None):
+        self.enqueue_ui_action(self.configure_language)
 
     def enqueue_open_keys_page(self, icon=None, item=None):
         self.enqueue_ui_action(self.open_keys_page_from_tray)
@@ -2040,10 +2357,14 @@ class GroqDictateApp:
         messagebox.showinfo(
             "AZA-STT",
             f"{status}\n\n"
-            f"{self.recording_instruction()},完成後會轉成文字。\n"
-            f"麥克風: {display_microphone_name(self.microphone_name)}\n"
-            "程式關閉錄音提示後仍會留在 Windows 右下角通知區。\n\n"
-            "若要完整關閉,請在 AZA-STT 圖示按右鍵,選擇「退出 AZA-STT」。",
+            + self.ui(
+                f"{self.recording_instruction()},完成後會轉成文字。\n"
+                f"麥克風: "
+                f"{display_microphone_name(self.microphone_name, self.language_mode)}\n"
+                "程式關閉錄音提示後仍會留在 Windows 右下角通知區。\n\n"
+                "若要完整關閉,請在 AZA-STT 圖示按右鍵,"
+                "選擇「退出 AZA-STT」。"
+            ),
             parent=self.root,
         )
 
@@ -2051,7 +2372,7 @@ class GroqDictateApp:
         if self.is_recording or self.is_processing_ui:
             messagebox.showwarning(
                 "AZA-STT",
-                "請先完成目前的錄音或語音辨識,再更換錄音控制。",
+                self.ui("請先完成目前的錄音或語音辨識,再更換錄音控制。"),
                 parent=self.root,
             )
             return
@@ -2064,6 +2385,7 @@ class GroqDictateApp:
                 self.root,
                 previous_key,
                 previous_mode,
+                self.language_mode,
             )
             selected_settings = dialog.result
             if not selected_settings:
@@ -2075,14 +2397,17 @@ class GroqDictateApp:
             )
             log_info(
                 "Recording control changed to "
-                f"{display_record_key(self.record_key)}, "
-                f"{display_activation_mode(self.activation_mode)}"
+                f"{display_record_key(self.record_key, self.language_mode)}, "
+                f"{display_activation_mode(self.activation_mode, self.language_mode)}"
             )
             if self.tray_icon:
                 self.tray_icon.update_menu()
             messagebox.showinfo(
                 "AZA-STT",
-                f"錄音控制已儲存。\n{self.recording_instruction()}。",
+                self.ui(
+                    f"錄音控制已儲存。\n"
+                    f"{self.recording_instruction()}。"
+                ),
                 parent=self.root,
             )
         except Exception as error:
@@ -2091,7 +2416,7 @@ class GroqDictateApp:
             log_info(f"Failed to change recording control: {error}")
             messagebox.showerror(
                 "AZA-STT",
-                f"無法儲存錄音控制:\n{error}",
+                self.ui(f"無法儲存錄音控制:\n{error}"),
                 parent=self.root,
             )
         finally:
@@ -2101,7 +2426,7 @@ class GroqDictateApp:
         if self.is_recording or self.is_processing_ui:
             messagebox.showwarning(
                 "AZA-STT",
-                "請先完成目前的錄音或語音辨識,再更換麥克風。",
+                self.ui("請先完成目前的錄音或語音辨識,再更換麥克風。"),
                 parent=self.root,
             )
             return
@@ -2110,6 +2435,7 @@ class GroqDictateApp:
             dialog = MicrophoneSetupDialog(
                 self.root,
                 self.microphone_name,
+                self.language_mode,
             )
             selected = dialog.result
             if not selected:
@@ -2118,21 +2444,73 @@ class GroqDictateApp:
             self.active_microphone_name = None
             log_info(
                 "Microphone selection changed to "
-                f'"{display_microphone_name(self.microphone_name)}".'
+                f'"{display_microphone_name(self.microphone_name, self.language_mode)}".'
             )
             if self.tray_icon:
                 self.tray_icon.update_menu()
             messagebox.showinfo(
                 "AZA-STT",
-                "麥克風設定已儲存。\n"
-                f"目前: {display_microphone_name(self.microphone_name)}",
+                self.ui(
+                    "麥克風設定已儲存。\n"
+                    f"目前: "
+                    f"{display_microphone_name(self.microphone_name, self.language_mode)}"
+                ),
                 parent=self.root,
             )
         except Exception as error:
             log_info(f"Failed to change microphone: {error}")
             messagebox.showerror(
                 "AZA-STT",
-                f"無法儲存麥克風設定:\n{error}",
+                self.ui(f"無法儲存麥克風設定:\n{error}"),
+                parent=self.root,
+            )
+
+    def configure_language(self):
+        if self.is_recording or self.is_processing_ui:
+            messagebox.showwarning(
+                "AZA-STT",
+                self.ui("請先完成目前的錄音或語音辨識,再切換語言。"),
+                parent=self.root,
+            )
+            return
+
+        previous_language = self.language_mode
+        try:
+            dialog = LanguageSetupDialog(
+                self.root,
+                previous_language,
+            )
+            selected_language = dialog.result
+            if not selected_language:
+                return
+            self.language_mode = save_user_language_mode(selected_language)
+            self.set_output_converter()
+            self.popup_menu.entryconfigure(
+                0,
+                label=self.ui("退出 AZA-STT"),
+            )
+            if self.tray_icon:
+                self.tray_icon.title = self.tray_status_text()
+                self.tray_icon.update_menu()
+            log_info(
+                "Language mode changed to "
+                f'"{self.language_mode}".'
+            )
+            messagebox.showinfo(
+                "AZA-STT",
+                self.ui(
+                    "語言設定已儲存。\n"
+                    f"目前: {display_language_mode(self.language_mode)}"
+                ),
+                parent=self.root,
+            )
+        except Exception as error:
+            self.language_mode = previous_language
+            self.set_output_converter()
+            log_info(f"Failed to change language mode: {error}")
+            messagebox.showerror(
+                "AZA-STT",
+                self.ui(f"無法儲存語言設定:\n{error}"),
                 parent=self.root,
             )
 
@@ -2140,12 +2518,15 @@ class GroqDictateApp:
         if self.is_recording or self.is_processing_ui:
             messagebox.showwarning(
                 "AZA-STT",
-                "請先完成目前的錄音或語音辨識,再更換 API key。",
+                self.ui("請先完成目前的錄音或語音辨識,再更換 API key。"),
                 parent=self.root,
             )
             return
 
-        keys = prompt_for_api_keys(parent=self.root)
+        keys = prompt_for_api_keys(
+            parent=self.root,
+            language_mode=self.language_mode,
+        )
         if not keys:
             return
         self.api_keys = keys
@@ -2158,7 +2539,7 @@ class GroqDictateApp:
         if not open_groq_keys_page():
             messagebox.showerror(
                 "AZA-STT",
-                f"無法開啟瀏覽器。\n\n{GROQ_KEYS_URL}",
+                self.ui(f"無法開啟瀏覽器。\n\n{GROQ_KEYS_URL}"),
                 parent=self.root,
             )
 
@@ -2254,6 +2635,9 @@ if __name__ == "__main__":
     if "--self-test-microphone" in sys.argv:
         sys.exit(0 if run_microphone_self_test() else 1)
 
+    if "--self-test-language" in sys.argv:
+        sys.exit(0 if run_language_self_test() else 1)
+
     if "--configure" in sys.argv:
         configured_keys = prompt_for_api_keys()
         sys.exit(0 if configured_keys else 1)
@@ -2262,10 +2646,14 @@ if __name__ == "__main__":
     if not instance_handle:
         log_info("Another AZA-STT instance is already running.")
         if sys.platform == "win32":
+            language_mode = load_user_language_mode()
             ctypes.windll.user32.MessageBoxW(
                 0,
-                "AZA-STT 已經在背景執行。\n\n"
-                "請在 Windows 右下角通知區尋找 AZA-STT 圖示。",
+                ui_text(
+                    "AZA-STT 已經在背景執行。\n\n"
+                    "請在 Windows 右下角通知區尋找 AZA-STT 圖示。",
+                    language_mode,
+                ),
                 "AZA-STT",
                 0x40,
             )
