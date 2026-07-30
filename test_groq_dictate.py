@@ -31,6 +31,7 @@ from groq_dictate import (
     parse_api_keys,
     prompt_for_api_keys,
     punctuate_from_timestamps,
+    remove_transcription_prompt_leakage,
     repair_microphone_name,
     run_flac_self_test,
     run_language_self_test,
@@ -47,7 +48,7 @@ from groq_dictate import (
 
 class NormalizeTranscriptionTests(unittest.TestCase):
     def test_does_not_change_intentionally_spoken_command_code(self):
-        self.assertEqual(normalize_transcription("腳本和指令碼是兩個詞"), "腳本和指令碼是兩個詞.")
+        self.assertEqual(normalize_transcription("腳本和指令碼是兩個詞"), "腳本和指令碼是兩個詞")
 
     def test_converts_chinese_punctuation_to_half_width(self):
         self.assertEqual(
@@ -55,8 +56,8 @@ class NormalizeTranscriptionTests(unittest.TestCase):
             "這是腳本, 請執行. 真的可以嗎? 可以!",
         )
 
-    def test_adds_a_final_period_when_missing(self):
-        self.assertEqual(normalize_transcription("這是一段沒有句號的文字"), "這是一段沒有句號的文字.")
+    def test_does_not_add_a_final_period_when_missing(self):
+        self.assertEqual(normalize_transcription("補字"), "補字")
 
     def test_does_not_duplicate_existing_terminal_punctuation(self):
         self.assertEqual(normalize_transcription("已經完成."), "已經完成.")
@@ -74,27 +75,27 @@ class NormalizeTranscriptionTests(unittest.TestCase):
                 "git hub copilot、node js、type script"
             ),
             "Groq, Gemini, ChatGPT, Claude Code, NVIDIA GPU, "
-            "GitHub Copilot, Node.js, TypeScript.",
+            "GitHub Copilot, Node.js, TypeScript",
         )
 
     def test_keeps_groq_and_grok_distinct(self):
-        self.assertEqual(normalize_transcription("groq 和 grok"), "Groq 和 Grok.")
+        self.assertEqual(normalize_transcription("groq 和 grok"), "Groq 和 Grok")
 
     def test_recognizes_spoken_quota_variants(self):
         self.assertEqual(
             normalize_transcription("我的扣打快要用完了"),
-            "我的 quota 快要用完了.",
+            "我的 quota 快要用完了",
         )
         self.assertEqual(
             normalize_transcription("quota 還很充足"),
-            "quota 還很充足.",
+            "quota 還很充足",
         )
 
     def test_promotes_a_comma_after_an_excessively_long_sentence(self):
         source = ("字" * MAX_SENTENCE_CHARACTERS) + ",下一句"
         self.assertEqual(
             normalize_transcription(source),
-            ("字" * MAX_SENTENCE_CHARACTERS) + ". 下一句.",
+            ("字" * MAX_SENTENCE_CHARACTERS) + ". 下一句",
         )
 
     def test_adds_a_paragraph_break_after_five_sentences(self):
@@ -143,6 +144,38 @@ class TimestampPunctuationTests(unittest.TestCase):
         self.assertEqual(
             punctuate_from_timestamps("Groq Gemini", words=words),
             "Groq, Gemini",
+        )
+
+
+class PromptLeakageTests(unittest.TestCase):
+    def test_removes_traditional_prompt_suffix_from_spoken_text(self):
+        self.assertEqual(
+            remove_transcription_prompt_leakage(
+                '像是現在就發生了. "標點後保留一個空格, 並依語意自然分句."'
+            ),
+            "像是現在就發生了.",
+        )
+
+    def test_removes_entire_traditional_prompt_instruction(self):
+        self.assertEqual(
+            remove_transcription_prompt_leakage(
+                "使用半形標點,標點後保留一個空格,並依語意自然分句。"
+            ),
+            "",
+        )
+
+    def test_removes_simplified_prompt_suffix(self):
+        self.assertEqual(
+            remove_transcription_prompt_leakage(
+                "補字。标点后保留一个空格，并按语义自然分句。"
+            ),
+            "補字。",
+        )
+
+    def test_preserves_natural_mention_of_half_width_punctuation(self):
+        self.assertEqual(
+            remove_transcription_prompt_leakage("這裡使用半形標點"),
+            "這裡使用半形標點",
         )
 
 
@@ -266,11 +299,11 @@ class LanguageSettingsTests(unittest.TestCase):
         app = GroqDictateApp.__new__(GroqDictateApp)
         app.language_mode = LANGUAGE_SIMPLIFIED
         app.set_output_converter()
-        self.assertEqual(app.prepare_transcription("這是腳本"), "这是脚本.")
+        self.assertEqual(app.prepare_transcription("這是腳本"), "这是脚本")
 
         app.language_mode = LANGUAGE_TRADITIONAL
         app.set_output_converter()
-        self.assertEqual(app.prepare_transcription("这是脚本"), "這是腳本.")
+        self.assertEqual(app.prepare_transcription("这是脚本"), "這是腳本")
 
     def test_language_self_test_path(self):
         self.assertTrue(run_language_self_test())

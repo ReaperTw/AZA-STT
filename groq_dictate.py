@@ -139,6 +139,26 @@ def transcription_prompt(language_mode):
         instruction = ". 使用半形標點,標點後保留一個空格,並依語意自然分句。"
     return description + ", ".join(TECH_TERMS) + instruction
 
+
+PROMPT_LEAKAGE_SUFFIXES = (
+    r"(?:使用半形標點[,，。.\s]*)?標點後保留一個空格[,，\s]*並依語意自然分句[。.]?",
+    r"(?:使用半角标点[,，。.\s]*)?标点后保留一个空格[,，\s]*并按语义自然分句[。.]?",
+)
+
+
+def remove_transcription_prompt_leakage(text):
+    """Remove known prompt instructions that Whisper may echo after quiet audio."""
+    cleaned = str(text or "").strip()
+    for suffix in PROMPT_LEAKAGE_SUFFIXES:
+        cleaned = re.sub(
+            rf"(?:[\s\"'「」『』]*{suffix}[\s\"'「」『』]*)$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).rstrip()
+    return cleaned
+
+
 # Longer or more specific names must run before their shorter forms.
 TECH_TERM_CORRECTIONS = (
     (r"(?<![A-Za-z0-9])claude[\s-]*code(?![A-Za-z0-9])", "Claude Code"),
@@ -417,9 +437,6 @@ def normalize_transcription(text):
     normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
     normalized = re.sub(r"[ \t]+", " ", normalized).strip()
     normalized = _limit_sentence_length(normalized)
-
-    if normalized and normalized[-1] not in ".!?":
-        normalized += "."
 
     normalized = _add_paragraph_breaks(normalized)
     return _format_half_width_punctuation_spacing(normalized)
@@ -2021,9 +2038,9 @@ class GroqDictateApp:
                 raise RuntimeError("The recording could not be saved.")
 
             transcription = self.transcribe_audio(wav_path)
-            raw_text = transcription.text
+            raw_text = remove_transcription_prompt_leakage(transcription.text)
             if not raw_text:
-                raise RuntimeError("Groq returned an empty transcription.")
+                raise RuntimeError("Groq returned no spoken content.")
 
             timestamped_text = punctuate_from_timestamps(
                 raw_text,
@@ -2031,6 +2048,8 @@ class GroqDictateApp:
                 segments=getattr(transcription, "segments", None),
             )
             final_text = self.prepare_transcription(timestamped_text)
+            if not final_text:
+                raise RuntimeError("Groq returned no spoken content.")
             log_info(f"Transcription success: {len(final_text)} characters")
 
             if not self.simulate_typing(final_text):
