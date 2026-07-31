@@ -287,6 +287,8 @@ class LanguageSettingsTests(unittest.TestCase):
         self.assertIn("繁體中文", transcription_prompt(LANGUAGE_TRADITIONAL))
         self.assertIn("quota", transcription_prompt(LANGUAGE_SIMPLIFIED))
         self.assertIn("GPT-5.6 Luna", transcription_prompt(LANGUAGE_TRADITIONAL))
+        self.assertIn("Skill", transcription_prompt(LANGUAGE_TRADITIONAL))
+        self.assertIn("Scale", transcription_prompt(LANGUAGE_TRADITIONAL))
 
     def test_detects_mainland_and_taiwan_windows_locales(self):
         with patch("groq_dictate.locale.getlocale", return_value=("zh_CN", "UTF-8")):

@@ -65,7 +65,7 @@ TECH_TERMS = (
     "JavaScript", "TypeScript", "React", "Next.js", "Node.js", "VS Code",
     "Docker", "Kubernetes", "API", "quota", "GPU", "AI", "AGI", "LLM",
     "GPT-5.6", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
-    "GPT-5.6 Sol Pro", "Extra High", "xhigh",
+    "GPT-5.6 Sol Pro", "Extra High", "xhigh", "Skill", "Skills", "Scale",
 )
 
 LANGUAGE_TRADITIONAL = "zh-TW"

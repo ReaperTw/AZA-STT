@@ -24,6 +24,8 @@
 | GPT-5.6 Sol Pro | GPT 5.6 Sol Pro、Sol Pro | 只有完整模型名才自動統一；`Pro` 單獨出現不自動改寫。 |
 | xhigh | x high、x-high | 可作為 reasoning effort 名稱保留；不要把一般句子中的 `high` 改掉。 |
 | Extra High | Extra-High、extra high | 保留為 ChatGPT 介面常見的顯示名稱。 |
+| Skill / Skills | 可能被聽成 Scale 或其他近音 | `Skill/Skills` 是較常使用的意圖，但不能把所有 `Scale` 盲改成 `Skill`；先保留上下文。 |
+| Scale | 可能和 Skill 混淆 | 使用者較少提到；只有有明確上下文時才保留為 `Scale`。 |
 
 ## GPT-5.6 名稱備註
 
