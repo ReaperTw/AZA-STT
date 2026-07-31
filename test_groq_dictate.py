@@ -81,6 +81,20 @@ class NormalizeTranscriptionTests(unittest.TestCase):
     def test_keeps_groq_and_grok_distinct(self):
         self.assertEqual(normalize_transcription("groq 和 grok"), "Groq 和 Grok")
 
+    def test_repairs_gork_to_grok_without_merging_groq(self):
+        self.assertEqual(
+            normalize_transcription("Gork 和 GROQ"),
+            "Grok 和 Groq",
+        )
+
+    def test_canonicalizes_gpt_56_model_names(self):
+        self.assertEqual(
+            normalize_transcription(
+                "gpt 5.6 sol、gpt-5.6 terra、gpt 5 6 luna、gpt 5.6 sol pro"
+            ),
+            "GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol Pro",
+        )
+
     def test_recognizes_spoken_quota_variants(self):
         self.assertEqual(
             normalize_transcription("我的扣打快要用完了"),
@@ -272,6 +286,7 @@ class LanguageSettingsTests(unittest.TestCase):
         self.assertIn("简体中文", transcription_prompt(LANGUAGE_SIMPLIFIED))
         self.assertIn("繁體中文", transcription_prompt(LANGUAGE_TRADITIONAL))
         self.assertIn("quota", transcription_prompt(LANGUAGE_SIMPLIFIED))
+        self.assertIn("GPT-5.6 Luna", transcription_prompt(LANGUAGE_TRADITIONAL))
 
     def test_detects_mainland_and_taiwan_windows_locales(self):
         with patch("groq_dictate.locale.getlocale", return_value=("zh_CN", "UTF-8")):

@@ -58,12 +58,14 @@ GROQ_KEYS_URL = "https://console.groq.com/keys"
 _LOGGER = None
 
 TECH_TERMS = (
-    "Groq", "Gemini", "ChatGPT", "OpenAI", "Claude", "Claude Code",
+    "Grok", "Groq", "Gemini", "ChatGPT", "OpenAI", "Claude", "Claude Code",
     "Anthropic", "NVIDIA", "CUDA", "Google", "DeepMind", "Microsoft",
-    "GitHub", "GitHub Copilot", "Copilot", "Meta", "Llama", "xAI", "Grok",
+    "GitHub", "GitHub Copilot", "Copilot", "Meta", "Llama", "xAI",
     "Mistral", "Perplexity", "Hugging Face", "Cursor", "Codex", "Python",
     "JavaScript", "TypeScript", "React", "Next.js", "Node.js", "VS Code",
     "Docker", "Kubernetes", "API", "quota", "GPU", "AI", "AGI", "LLM",
+    "GPT-5.6", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
+    "GPT-5.6 Sol Pro", "Extra High", "xhigh",
 )
 
 LANGUAGE_TRADITIONAL = "zh-TW"
@@ -164,6 +166,11 @@ TECH_TERM_CORRECTIONS = (
     (r"(?<![A-Za-z0-9])claude[\s-]*code(?![A-Za-z0-9])", "Claude Code"),
     (r"克[勞洛]德\s*(?:Code|程式碼|代码)", "Claude Code"),
     (r"(?<![A-Za-z0-9])chat[\s-]*gpt(?![A-Za-z0-9])", "ChatGPT"),
+    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*sol[\s-]*pro(?![A-Za-z0-9])", "GPT-5.6 Sol Pro"),
+    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*sol(?![A-Za-z0-9])", "GPT-5.6 Sol"),
+    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*terra(?![A-Za-z0-9])", "GPT-5.6 Terra"),
+    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*luna(?![A-Za-z0-9])", "GPT-5.6 Luna"),
+    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6(?![A-Za-z0-9])", "GPT-5.6"),
     (r"(?<![A-Za-z0-9])open[\s-]*ai(?![A-Za-z0-9])", "OpenAI"),
     (r"(?<![A-Za-z0-9])git[\s-]*hub[\s-]*copilot(?![A-Za-z0-9])", "GitHub Copilot"),
     (r"(?<![A-Za-z0-9])git[\s-]*hub(?![A-Za-z0-9])", "GitHub"),
@@ -177,6 +184,7 @@ TECH_TERM_CORRECTIONS = (
     (r"(?<![A-Za-z0-9])node[\s.-]*js(?![A-Za-z0-9])", "Node.js"),
     (r"(?<![A-Za-z0-9])nvidia(?![A-Za-z0-9])", "NVIDIA"),
     (r"(?<![A-Za-z0-9])x[\s-]*ai(?![A-Za-z0-9])", "xAI"),
+    (r"(?<![A-Za-z0-9])gork(?![A-Za-z0-9])", "Grok"),
     (r"(?<![A-Za-z0-9])groq(?![A-Za-z0-9])", "Groq"),
     (r"(?<![A-Za-z0-9])grok(?![A-Za-z0-9])", "Grok"),
     (r"(?<![A-Za-z0-9])gemini(?![A-Za-z0-9])", "Gemini"),
