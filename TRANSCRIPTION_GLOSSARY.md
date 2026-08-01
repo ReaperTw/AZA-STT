@@ -2,14 +2,14 @@
 
 這份文件維護「使用者常講、但 Whisper 可能因口音、連音或大小寫而辨識不穩定」的名詞。它和模型價格、排名、可用性分開；那些資訊會變動，不應寫死在轉錄詞彙表中。
 
-最後檢視：2026-07-31
+最後檢視：2026-08-02
 
 ## 維護原則
 
 - **Canonical** 是最後希望貼出的寫法。
 - **常見辨識變體** 是提示詞或後處理值得照顧的拼法，不代表每個變體都能安全自動改寫。
 - 兩個詞如果發音接近但意義不同，保留兩者並記錄歧義，不要用無條件替換把它們合併。
-- 新增詞彙時，同步更新 `TECH_TERMS`、`TECH_TERM_CORRECTIONS` 和回歸測試；文件是可讀的索引，不是執行期設定檔。
+- 新增詞彙時，依用途更新 `transcription_interpreter.py` 的 `PROMPT_TERMS` 或 `TECH_TERM_CORRECTIONS`，並同步更新 `test_transcription_interpreter.py`；文件是可讀的索引，不是執行期設定檔。
 - 只加入實際常講或確實容易辨識錯誤的詞，避免把所有歷史模型名稱塞進 Whisper prompt。
 
 ## 目前優先詞彙
@@ -40,7 +40,7 @@ Reasoning 名稱可以分成兩套來看：
 
 ## 已納入一般提示詞的相關名詞
 
-目前程式的 `TECH_TERMS` 也包含 Groq、Grok、ChatGPT、OpenAI、Claude、Claude Code、Gemini、Codex、GitHub、Copilot、Python、JavaScript、TypeScript、React、Next.js、Node.js、VS Code、API、GPU、AI、AGI、LLM 等常用詞。完整執行期清單仍以 `groq_dictate.py` 為準。
+目前 `transcription_interpreter.py` 的 `transcription_prompt()` 會先說明 AI／軟體開發情境與 `Skill/Skills` 偏好；`PROMPT_TERMS` 只保留經常需要提示 Whisper 拼字的短專有名詞清單，例如 Groq、Grok、GPT-5.6 家族與常用開發工具。較廣的安全拼字修正放在同檔的 `TECH_TERM_CORRECTIONS`。完整執行期規則均以 `transcription_interpreter.py` 為準。
 
 ## 新增詞彙的格式
 

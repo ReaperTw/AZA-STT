@@ -4,13 +4,14 @@ import tempfile
 import wave
 from unittest.mock import Mock, patch
 
+import opencc
+
 from groq_dictate import (
     FLAC_THRESHOLD_BYTES,
     GROQ_KEYS_URL,
     GroqDictateApp,
     LANGUAGE_SIMPLIFIED,
     LANGUAGE_TRADITIONAL,
-    MAX_SENTENCE_CHARACTERS,
     compress_to_flac,
     create_tray_image,
     detect_default_language_mode,
@@ -18,20 +19,18 @@ from groq_dictate import (
     display_language_mode,
     display_microphone_name,
     display_record_key,
+    log_info,
     load_user_input_settings,
     load_user_language_mode,
     load_user_microphone_selection,
     load_user_record_key,
     microphone_device_candidates,
-    normalize_transcription,
     normalize_activation_mode,
     normalize_record_key,
     open_microphone_stream,
     open_groq_keys_page,
     parse_api_keys,
     prompt_for_api_keys,
-    punctuate_from_timestamps,
-    remove_transcription_prompt_leakage,
     repair_microphone_name,
     run_flac_self_test,
     run_language_self_test,
@@ -40,10 +39,39 @@ from groq_dictate import (
     save_user_microphone_selection,
     save_user_record_key,
     sf,
-    transcription_prompt,
     ui_text,
     valid_api_keys,
 )
+from transcription_interpreter import (
+    MAX_SENTENCE_CHARACTERS,
+    TranscriptionInterpreter,
+    normalize_transcription,
+    punctuate_from_timestamps,
+    remove_transcription_prompt_leakage,
+    transcription_prompt,
+)
+
+
+class LoggingTests(unittest.TestCase):
+    @patch("builtins.print", side_effect=OSError(22, "Invalid argument"))
+    def test_log_info_does_not_crash_when_packaged_app_has_no_console(self, _print):
+        log_info("packaged logging regression test")
+
+    @patch("builtins.print", side_effect=OSError(22, "Invalid argument"))
+    def test_error_ui_finishes_when_packaged_app_has_no_console(self, _print):
+        app = GroqDictateApp.__new__(GroqDictateApp)
+        app.cancel_hide_timer = Mock()
+        app.canvas = Mock()
+        app.sphere = "sphere"
+        app.root = Mock()
+        app.root.after.return_value = "timer-id"
+        app.set_tray_status = Mock()
+        app.set_ui_idle = Mock()
+
+        app.set_ui_error("test failure")
+
+        app.set_tray_status.assert_called_once_with("error")
+        self.assertEqual(app.hide_timer_id, "timer-id")
 
 
 class NormalizeTranscriptionTests(unittest.TestCase):
@@ -193,6 +221,48 @@ class PromptLeakageTests(unittest.TestCase):
         )
 
 
+class TranscriptionWorkflowTests(unittest.TestCase):
+    def make_app(self, response, language_mode=LANGUAGE_TRADITIONAL):
+        app = GroqDictateApp.__new__(GroqDictateApp)
+        app.frames = [b"recorded audio"]
+        app.transcription_interpreter = TranscriptionInterpreter(language_mode)
+        app.transcribe_audio = Mock(return_value=response)
+        app.simulate_typing = Mock(return_value=True)
+        app.set_ui_success = Mock()
+        app.set_ui_error = Mock()
+        app.root = Mock()
+        app.root.after.side_effect = lambda _delay, callback: callback()
+
+        descriptor, wav_path = tempfile.mkstemp(suffix=".wav")
+        os.close(descriptor)
+        app.save_wav_file = Mock(return_value=wav_path)
+        return app, wav_path
+
+    def test_interprets_provider_response_before_pasting(self):
+        app, wav_path = self.make_app({"text": "groq 和 gork，完成"})
+
+        app.process_audio_workflow()
+
+        app.simulate_typing.assert_called_once_with("Groq 和 Grok, 完成")
+        app.set_ui_success.assert_called_once_with()
+        app.set_ui_error.assert_not_called()
+        self.assertEqual(app.frames, [])
+        self.assertFalse(os.path.exists(wav_path))
+
+    def test_rejected_provider_response_is_not_pasted(self):
+        app, wav_path = self.make_app(
+            {"text": "使用半形標點,標點後保留一個空格,並依語意自然分句。"}
+        )
+
+        app.process_audio_workflow()
+
+        app.simulate_typing.assert_not_called()
+        app.set_ui_success.assert_not_called()
+        app.set_ui_error.assert_called_once_with("Groq returned no spoken content.")
+        self.assertEqual(app.frames, [])
+        self.assertFalse(os.path.exists(wav_path))
+
+
 class AudioCompressionTests(unittest.TestCase):
     def test_flac_threshold_is_about_four_minutes_of_recorded_audio(self):
         pcm_bytes_per_second = 16000 * 1 * 2
@@ -312,18 +382,19 @@ class LanguageSettingsTests(unittest.TestCase):
             self.assertEqual(load_user_input_settings(settings_path), ("f9", "hold"))
             self.assertEqual(load_user_microphone_selection(settings_path), "Mic A")
 
-    def test_output_converter_matches_selected_language(self):
-        app = GroqDictateApp.__new__(GroqDictateApp)
-        app.language_mode = LANGUAGE_SIMPLIFIED
-        app.set_output_converter()
-        self.assertEqual(app.prepare_transcription("這是腳本"), "这是脚本")
-
-        app.language_mode = LANGUAGE_TRADITIONAL
-        app.set_output_converter()
-        self.assertEqual(app.prepare_transcription("这是脚本"), "這是腳本")
-
     def test_language_self_test_path(self):
         self.assertTrue(run_language_self_test())
+
+    def test_language_self_test_fails_when_traditional_conversion_is_unavailable(self):
+        real_opencc = opencc.OpenCC
+
+        def open_converter(config):
+            if config == "s2tw":
+                raise RuntimeError("missing s2tw data")
+            return real_opencc(config)
+
+        with patch("groq_dictate.opencc.OpenCC", side_effect=open_converter):
+            self.assertFalse(run_language_self_test())
 
 
 class RecordingKeySettingsTests(unittest.TestCase):
