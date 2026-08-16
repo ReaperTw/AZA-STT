@@ -80,7 +80,26 @@ class TranscriptionInterpreterTests(unittest.TestCase):
 
         result = TranscriptionInterpreter().interpret(response)
 
-        self.assertEqual(result.text, "我 用 Groq 和 Grok, 寫 API")
+        self.assertEqual(result.text, "我 用 groq 和 Grok, 寫 API")
+
+    def test_removes_standalone_fillers_and_provider_line_breaks(self):
+        result = TranscriptionInterpreter().interpret(
+            {"text": "嗯，我覺得，呃... 這個可以。\n\n下一句"}
+        )
+
+        self.assertEqual(result.text, "我覺得, 這個可以. 下一句")
+
+    def test_preserves_terminal_agreement_word(self):
+        result = TranscriptionInterpreter().interpret({"text": "我回答：嗯。"})
+
+        self.assertEqual(result.text, "我回答: 嗯.")
+
+    def test_removes_filler_with_consecutive_punctuation(self):
+        result = TranscriptionInterpreter().interpret(
+            {"text": "我覺得，呃...，這個可以"}
+        )
+
+        self.assertEqual(result.text, "我覺得, 這個可以")
 
     def test_public_interface_preserves_urls_versions_decimals_and_thousands(self):
         result = TranscriptionInterpreter().interpret(
@@ -132,17 +151,16 @@ class TranscriptionInterpreterTests(unittest.TestCase):
 
         self.assertEqual(result.text, "hello. world")
 
-    def test_prompt_prioritizes_skill_while_preserving_real_scale(self):
+    def test_prompt_matches_frequently_spoken_terms(self):
         interpreter = TranscriptionInterpreter()
 
         self.assertIn("Skill/Skills", interpreter.prompt)
-        self.assertIn("Scale 僅用於尺度、比例或規模", interpreter.prompt)
-        self.assertNotIn("Skill, Skills, Scale", interpreter.prompt)
+        self.assertIn("Sol, Terra, Luna", interpreter.prompt)
+        self.assertIn("子代理, Subagent", interpreter.prompt)
+        for unused_term in ("Groq", "Scale", "Sol Pro", "Extra High", "Copilot"):
+            self.assertNotIn(unused_term, interpreter.prompt)
+        self.assertIn("不要換行", interpreter.prompt)
         self.assertIn("繁體中文", interpreter.prompt)
-        self.assertEqual(
-            interpreter.interpret({"text": "圖片的 Scale 調成兩倍"}).text,
-            "圖片的 Scale 調成兩倍",
-        )
 
     def test_simplified_prompt_language(self):
         self.assertIn("简体中文", TranscriptionInterpreter("zh-CN").prompt)

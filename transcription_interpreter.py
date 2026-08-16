@@ -12,10 +12,9 @@ LOGGER = logging.getLogger("aza_stt.transcription_interpreter")
 
 
 PROMPT_TERMS = (
-    "Grok", "Groq", "Gemini", "ChatGPT", "OpenAI", "Claude Code",
-    "GitHub", "GitHub Copilot", "Codex", "Python", "TypeScript", "API", "quota",
-    "GPT-5.6", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
-    "GPT-5.6 Sol Pro", "Extra High", "xhigh",
+    "Grok", "Gemini", "ChatGPT", "OpenAI", "Claude Code", "GitHub",
+    "Codex", "Python", "TypeScript", "API", "quota", "Sol", "Terra",
+    "Luna", "xhigh", "子代理", "Subagent",
 )
 
 LANGUAGE_TRADITIONAL = "zh-TW"
@@ -31,13 +30,13 @@ def normalize_language_mode(mode):
 def transcription_prompt(language_mode):
     if normalize_language_mode(language_mode) == LANGUAGE_SIMPLIFIED:
         description = (
-            "简体中文 AI 与软件开发忠实逐字稿。常见词: Skill/Skills。"
-            "Scale 仅用于尺度、比例或规模。专有名词: "
+            "简体中文 AI 与软件开发忠实逐字稿，仅省略口语停顿用的“呃、嗯”，"
+            "不要换行。常见词: Skill/Skills。专有名词: "
         )
     else:
         description = (
-            "繁體中文 AI 與軟體開發忠實逐字稿。常見詞: Skill/Skills。"
-            "Scale 僅用於尺度、比例或規模。專有名詞: "
+            "繁體中文 AI 與軟體開發忠實逐字稿，僅省略口語停頓用的「呃、嗯」，"
+            "不要換行。常見詞: Skill/Skills。專有名詞: "
         )
     return description + ", ".join(PROMPT_TERMS) + "."
 
@@ -74,16 +73,13 @@ TECH_TERM_CORRECTIONS = (
     (r"(?<![A-Za-z0-9])claude[\s-]*code(?![A-Za-z0-9])", "Claude Code"),
     (r"克[勞洛]德\s*(?:Code|程式碼|代码)", "Claude Code"),
     (r"(?<![A-Za-z0-9])chat[\s-]*gpt(?![A-Za-z0-9])", "ChatGPT"),
-    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*sol[\s-]*pro(?![A-Za-z0-9])", "GPT-5.6 Sol Pro"),
-    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*sol(?![A-Za-z0-9])", "GPT-5.6 Sol"),
+    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*sol(?![\s-]*pro(?:\b|$))(?![A-Za-z0-9])", "GPT-5.6 Sol"),
     (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*terra(?![A-Za-z0-9])", "GPT-5.6 Terra"),
     (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6[\s-]*luna(?![A-Za-z0-9])", "GPT-5.6 Luna"),
-    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6(?![A-Za-z0-9])", "GPT-5.6"),
+    (r"(?<![A-Za-z0-9])gpt[\s.-]*5[\s.-]*6(?![\s-]*(?:sol|terra|luna)\b)(?![A-Za-z0-9])", "GPT-5.6"),
     (r"(?<![A-Za-z0-9])open[\s-]*ai(?![A-Za-z0-9])", "OpenAI"),
-    (r"(?<![A-Za-z0-9])git[\s-]*hub[\s-]*copilot(?![A-Za-z0-9])", "GitHub Copilot"),
     (r"(?<![A-Za-z0-9])git[\s-]*hub(?![A-Za-z0-9])", "GitHub"),
     (r"(?<![A-Za-z0-9])hugging[\s-]*face(?![A-Za-z0-9])", "Hugging Face"),
-    (r"(?<![A-Za-z0-9])deep[\s-]*mind(?![A-Za-z0-9])", "DeepMind"),
     (r"(?<![A-Za-z0-9])visual\s*studio\s*code(?![A-Za-z0-9])", "VS Code"),
     (r"(?<![A-Za-z0-9])vs[\s-]*code(?![A-Za-z0-9])", "VS Code"),
     (r"(?<![A-Za-z0-9])java[\s-]*script(?![A-Za-z0-9])", "JavaScript"),
@@ -93,27 +89,20 @@ TECH_TERM_CORRECTIONS = (
     (r"(?<![A-Za-z0-9])nvidia(?![A-Za-z0-9])", "NVIDIA"),
     (r"(?<![A-Za-z0-9])x[\s-]*ai(?![A-Za-z0-9])", "xAI"),
     (r"(?<![A-Za-z0-9])gork(?![A-Za-z0-9])", "Grok"),
-    (r"(?<![A-Za-z0-9])groq(?![A-Za-z0-9])", "Groq"),
     (r"(?<![A-Za-z0-9])grok(?![A-Za-z0-9])", "Grok"),
     (r"(?<![A-Za-z0-9])gemini(?![A-Za-z0-9])", "Gemini"),
     (r"(?<![A-Za-z0-9])claude(?![A-Za-z0-9])", "Claude"),
     (r"(?<![A-Za-z0-9])anthropic(?![A-Za-z0-9])", "Anthropic"),
     (r"(?<![A-Za-z0-9])google(?![A-Za-z0-9])", "Google"),
     (r"(?<![A-Za-z0-9])microsoft(?![A-Za-z0-9])", "Microsoft"),
-    (r"(?<![A-Za-z0-9])copilot(?![A-Za-z0-9])", "Copilot"),
-    (r"(?<![A-Za-z0-9])meta(?![A-Za-z0-9])", "Meta"),
     (r"(?<![A-Za-z0-9])llama(?![A-Za-z0-9])", "Llama"),
-    (r"(?<![A-Za-z0-9])mistral(?![A-Za-z0-9])", "Mistral"),
-    (r"(?<![A-Za-z0-9])perplexity(?![A-Za-z0-9])", "Perplexity"),
     (r"(?<![A-Za-z0-9])javascript(?![A-Za-z0-9])", "JavaScript"),
     (r"(?<![A-Za-z0-9])typescript(?![A-Za-z0-9])", "TypeScript"),
     (r"(?<![A-Za-z0-9])python(?![A-Za-z0-9])", "Python"),
     (r"(?<![A-Za-z0-9])react(?![A-Za-z0-9])", "React"),
     (r"(?<![A-Za-z0-9])docker(?![A-Za-z0-9])", "Docker"),
-    (r"(?<![A-Za-z0-9])kubernetes(?![A-Za-z0-9])", "Kubernetes"),
     (r"(?<![A-Za-z0-9])codex(?![A-Za-z0-9])", "Codex"),
     (r"(?<![A-Za-z0-9])cursor(?![A-Za-z0-9])", "Cursor"),
-    (r"(?<![A-Za-z0-9])cuda(?![A-Za-z0-9])", "CUDA"),
     (r"(?<![A-Za-z0-9])quota(?![A-Za-z0-9])", " quota "),
     (r"扣打|扣達|扣达|闊塔|阔塔|庫塔|库塔", " quota "),
     (r"(?<![A-Za-z0-9])api(?![A-Za-z0-9])", "API"),
@@ -124,7 +113,6 @@ TECH_TERM_CORRECTIONS = (
     (r"聊天\s*GPT", "ChatGPT"),
     (r"傑米奈|杰米奈", "Gemini"),
     (r"克[勞洛]德", "Claude"),
-    (r"格[羅洛]克|葛洛克", "Groq"),
     (r"輝達|英偉達|英伟达", "NVIDIA"),
 )
 
@@ -145,13 +133,34 @@ PUNCTUATION_TRANSLATION = str.maketrans(
 PHRASE_PAUSE_SECONDS = 0.35
 SENTENCE_PAUSE_SECONDS = 0.80
 MAX_SENTENCE_CHARACTERS = 90
-MAX_SENTENCES_PER_PARAGRAPH = 5
+
+FILLER_WORD_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9\u3400-\u9fff])(?:呃+|嗯+)"
+    r"(?![A-Za-z0-9\u3400-\u9fff])"
+    r"(?:\s*[.…,，、;；:：!?！？。]+)*"
+)
 
 
 def canonicalize_tech_terms(text):
     for pattern, replacement in TECH_TERM_CORRECTIONS:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return text
+
+
+def remove_filler_words(text):
+    removed = False
+
+    def remove_if_unambiguous(match):
+        nonlocal removed
+        if match.group().startswith("嗯") and not text[match.end():].strip():
+            return match.group()
+        removed = True
+        return ""
+
+    cleaned = FILLER_WORD_PATTERN.sub(remove_if_unambiguous, text)
+    if removed:
+        cleaned = re.sub(r"[,，、;；:：]\s*$", "", cleaned)
+    return cleaned
 
 
 def _is_cjk(char):
@@ -291,25 +300,6 @@ def _limit_sentence_length(text):
     return "".join(output)
 
 
-def _add_paragraph_breaks(text):
-    output = []
-    sentence_count = 0
-    for index, char in enumerate(text):
-        output.append(char)
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-        is_terminal = char in "!?" or (
-            char == "." and not (next_char and (next_char.islower() or next_char.isdigit()))
-        )
-        if not is_terminal:
-            continue
-
-        sentence_count += 1
-        if sentence_count >= MAX_SENTENCES_PER_PARAGRAPH and next_char:
-            output.append("\n\n")
-            sentence_count = 0
-    return "".join(output)
-
-
 def _format_half_width_punctuation_spacing(text):
     """Add one readable space after half-width punctuation without damaging tokens."""
     text = re.sub(r"[ \t]+([,.;:!?])", r"\1", text)
@@ -353,11 +343,11 @@ def normalize_transcription(text):
         return text
 
     normalized = text.translate(PUNCTUATION_TRANSLATION)
+    normalized = remove_filler_words(normalized)
     normalized = canonicalize_tech_terms(normalized)
     normalized = re.sub(r"\s+([,.;:!?])", r"\1", normalized)
-    normalized = re.sub(r"[ \t]+", " ", normalized).strip()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = _limit_sentence_length(normalized)
-    normalized = _add_paragraph_breaks(normalized)
     return _format_half_width_punctuation_spacing(normalized)
 
 

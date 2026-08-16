@@ -99,28 +99,36 @@ class NormalizeTranscriptionTests(unittest.TestCase):
     def test_canonicalizes_ai_and_tech_names(self):
         self.assertEqual(
             normalize_transcription(
-                "groq、gemini、chat gpt、claude code、nvidia gpu、"
-                "git hub copilot、node js、type script"
+                "gemini、chat gpt、claude code、nvidia gpu、"
+                "git hub、node js、type script"
             ),
-            "Groq, Gemini, ChatGPT, Claude Code, NVIDIA GPU, "
-            "GitHub Copilot, Node.js, TypeScript",
+            "Gemini, ChatGPT, Claude Code, NVIDIA GPU, "
+            "GitHub, Node.js, TypeScript",
         )
 
-    def test_keeps_groq_and_grok_distinct(self):
-        self.assertEqual(normalize_transcription("groq 和 grok"), "Groq 和 Grok")
-
-    def test_repairs_gork_to_grok_without_merging_groq(self):
+    def test_repairs_gork_without_canonicalizing_unused_groq(self):
         self.assertEqual(
             normalize_transcription("Gork 和 GROQ"),
-            "Grok 和 Groq",
+            "Grok 和 GROQ",
         )
+
+    def test_does_not_canonicalize_removed_terms(self):
+        text = "groq copilot deep mind meta perplexity mistral kubernetes cuda"
+
+        self.assertEqual(normalize_transcription(text), text)
 
     def test_canonicalizes_gpt_56_model_names(self):
         self.assertEqual(
             normalize_transcription(
-                "gpt 5.6 sol、gpt-5.6 terra、gpt 5 6 luna、gpt 5.6 sol pro"
+                "gpt 5.6 sol、gpt-5.6 terra、gpt 5 6 luna"
             ),
-            "GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol Pro",
+            "GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna",
+        )
+
+    def test_does_not_canonicalize_removed_sol_pro(self):
+        self.assertEqual(
+            normalize_transcription("gpt 5.6 sol pro"),
+            "gpt 5.6 sol pro",
         )
 
     def test_recognizes_spoken_quota_variants(self):
@@ -140,10 +148,10 @@ class NormalizeTranscriptionTests(unittest.TestCase):
             ("字" * MAX_SENTENCE_CHARACTERS) + ". 下一句",
         )
 
-    def test_adds_a_paragraph_break_after_five_sentences(self):
+    def test_does_not_add_or_preserve_line_breaks(self):
         self.assertEqual(
-            normalize_transcription("一.二.三.四.五.六."),
-            "一. 二. 三. 四. 五.\n\n六.",
+            normalize_transcription("一.二.三.四.五.\n\n六."),
+            "一. 二. 三. 四. 五. 六.",
         )
 
     def test_preserves_urls_versions_decimals_and_thousands(self):
@@ -243,7 +251,7 @@ class TranscriptionWorkflowTests(unittest.TestCase):
 
         app.process_audio_workflow()
 
-        app.simulate_typing.assert_called_once_with("Groq 和 Grok, 完成")
+        app.simulate_typing.assert_called_once_with("groq 和 Grok, 完成")
         app.set_ui_success.assert_called_once_with()
         app.set_ui_error.assert_not_called()
         self.assertEqual(app.frames, [])
@@ -356,9 +364,9 @@ class LanguageSettingsTests(unittest.TestCase):
         self.assertIn("简体中文", transcription_prompt(LANGUAGE_SIMPLIFIED))
         self.assertIn("繁體中文", transcription_prompt(LANGUAGE_TRADITIONAL))
         self.assertIn("quota", transcription_prompt(LANGUAGE_SIMPLIFIED))
-        self.assertIn("GPT-5.6 Luna", transcription_prompt(LANGUAGE_TRADITIONAL))
+        self.assertIn("Sol, Terra, Luna", transcription_prompt(LANGUAGE_TRADITIONAL))
         self.assertIn("Skill", transcription_prompt(LANGUAGE_TRADITIONAL))
-        self.assertIn("Scale", transcription_prompt(LANGUAGE_TRADITIONAL))
+        self.assertNotIn("Scale", transcription_prompt(LANGUAGE_TRADITIONAL))
 
     def test_detects_mainland_and_taiwan_windows_locales(self):
         with patch("groq_dictate.locale.getlocale", return_value=("zh_CN", "UTF-8")):
