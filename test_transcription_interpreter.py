@@ -73,14 +73,14 @@ class TranscriptionInterpreterTests(unittest.TestCase):
 
     def test_traditional_punctuation_and_technical_terms(self):
         response = SimpleNamespace(
-            text="我 用 groq 和 gork，寫 api",
+            text="我用 cluade code 和 harness，寫 api",
             words=None,
             segments=None,
         )
 
         result = TranscriptionInterpreter().interpret(response)
 
-        self.assertEqual(result.text, "我 用 groq 和 Grok, 寫 API")
+        self.assertEqual(result.text, "我用 Claude Code 和 harness, 寫 API")
 
     def test_removes_standalone_fillers_and_provider_line_breaks(self):
         result = TranscriptionInterpreter().interpret(
@@ -89,10 +89,20 @@ class TranscriptionInterpreterTests(unittest.TestCase):
 
         self.assertEqual(result.text, "我覺得, 這個可以. 下一句")
 
-    def test_preserves_terminal_agreement_word(self):
-        result = TranscriptionInterpreter().interpret({"text": "我回答：嗯。"})
+    def test_removes_terminal_filler_word(self):
+        result = TranscriptionInterpreter().interpret({"text": "我覺得可以，嗯。"})
 
-        self.assertEqual(result.text, "我回答: 嗯.")
+        self.assertEqual(result.text, "我覺得可以")
+
+    def test_preserves_terminal_answer_word(self):
+        result = TranscriptionInterpreter().interpret({"text": "你同意嗎？嗯。"})
+
+        self.assertEqual(result.text, "你同意嗎? 嗯.")
+
+    def test_preserves_standalone_agreement_word(self):
+        result = TranscriptionInterpreter().interpret({"text": "嗯。"})
+
+        self.assertEqual(result.text, "嗯.")
 
     def test_removes_filler_with_consecutive_punctuation(self):
         result = TranscriptionInterpreter().interpret(
@@ -182,6 +192,7 @@ class TranscriptionInterpreterTests(unittest.TestCase):
         interpreter = TranscriptionInterpreter()
 
         self.assertIn("Skill/Skills", interpreter.prompt)
+        self.assertIn("Claude Code, Harness", interpreter.prompt)
         self.assertIn("Sol, Terra, Luna", interpreter.prompt)
         self.assertIn("子代理, Subagent", interpreter.prompt)
         for unused_term in ("Groq", "Scale", "Sol Pro", "Extra High", "Copilot"):

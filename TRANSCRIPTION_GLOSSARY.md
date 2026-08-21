@@ -2,7 +2,7 @@
 
 這份文件維護「使用者常講、但 Whisper 可能因口音、連音或大小寫而辨識不穩定」的名詞。它和模型價格、排名、可用性分開；那些資訊會變動，不應寫死在轉錄詞彙表中。
 
-最後檢視：2026-08-16
+最後檢視：2026-08-21
 
 ## 維護原則
 
@@ -17,6 +17,8 @@
 | Canonical | 常見語音／辨識變體 | 處理方式 |
 | --- | --- | --- |
 | Grok | Gork、GROK | `Gork` 可安全修正為 `Grok`。 |
+| Claude Code | Cluade Code、claude code | Prompt 提示正式拼字，並安全修正常見錯拼。 |
+| Harness | harness | Prompt 提示正式拼字，不做無條件大小寫修正。 |
 | Sol | GPT-5.6 Sol | Prompt 優先提示獨立名稱；若完整說出 GPT-5.6，仍統一其格式。 |
 | Terra | GPT-5.6 Terra | Prompt 優先提示獨立名稱；若完整說出 GPT-5.6，仍統一其格式。 |
 | Luna | GPT-5.6 Luna | Prompt 優先提示獨立名稱；若完整說出 GPT-5.6，仍統一其格式。 |

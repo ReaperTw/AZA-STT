@@ -99,10 +99,10 @@ class NormalizeTranscriptionTests(unittest.TestCase):
     def test_canonicalizes_ai_and_tech_names(self):
         self.assertEqual(
             normalize_transcription(
-                "gemini、chat gpt、claude code、nvidia gpu、"
+                "gemini、chat gpt、cluade code、harness、nvidia gpu、"
                 "git hub、node js、type script"
             ),
-            "Gemini, ChatGPT, Claude Code, NVIDIA GPU, "
+            "Gemini, ChatGPT, Claude Code, harness, NVIDIA GPU, "
             "GitHub, Node.js, TypeScript",
         )
 

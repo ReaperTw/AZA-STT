@@ -20,13 +20,19 @@ Groq 目前提供的免费额度、模型、API 规格与服务可用性均由 G
 - 只转换字形,不会擅自把“脚本”改成“指令码”等不同词汇
 - 统一使用半角英文标点,并在标点后保留一个空格
 - 根据说话停顿自然分句,每五句自动换段
-- 自动修正 Groq、Gemini、ChatGPT、Claude Code、NVIDIA、OpenAI、GitHub Copilot、Codex、quota 等科技名称
+- 自动修正 Gemini、ChatGPT、Claude Code、Harness、NVIDIA、OpenAI、GitHub Copilot、Codex、quota 等科技名称
 - 识别完成后直接粘贴到当前输入位置
 - 可自行更换键盘按键或鼠标侧键,并选择三种录音方式
 - 可从系统托盘选择麦克风,指定设备失效时会自动改用其他可用设备
 - 常驻 Windows 右下角系统托盘,可随时查看状态、修改设置或退出
 - 短录音直接上传 WAV,较长录音会自动使用无损 FLAC 压缩,不需要另外安装 FFmpeg
 - 识别失败时会自动切换模型或备用 API key
+
+### 欢迎按自己的习惯定制
+
+AZA-STT 的核心功能已经基本完整。如果你想改变标点、简繁体、语气词、分段方式，或者加入自动排版、语义确认等处理，欢迎把源代码交给 Codex、Claude Code 或你常用的 coding agent／harness，让它按照你的工作方式修改。
+
+本项目使用 MIT License，作者完全支持这类个人定制。定制版本需要自行维护；以后如果要合并官方更新，可能需要让 agent 协助处理改动。
 
 ## 如何使用
 

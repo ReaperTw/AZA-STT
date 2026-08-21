@@ -12,7 +12,7 @@ LOGGER = logging.getLogger("aza_stt.transcription_interpreter")
 
 
 PROMPT_TERMS = (
-    "Grok", "Gemini", "ChatGPT", "OpenAI", "Claude Code", "GitHub",
+    "Grok", "Gemini", "ChatGPT", "OpenAI", "Claude Code", "Harness", "GitHub",
     "Codex", "Python", "TypeScript", "API", "quota", "Sol", "Terra",
     "Luna", "xhigh", "子代理", "Subagent",
 )
@@ -72,6 +72,7 @@ def remove_transcription_prompt_leakage(text):
 
 # Longer or more specific names must run before their shorter forms.
 TECH_TERM_CORRECTIONS = (
+    (r"(?<![A-Za-z0-9])cluade[\s-]*code(?![A-Za-z0-9])", "Claude Code"),
     (r"(?<![A-Za-z0-9])claude[\s-]*code(?![A-Za-z0-9])", "Claude Code"),
     (r"克[勞洛]德\s*(?:Code|程式碼|代码)", "Claude Code"),
     (r"(?<![A-Za-z0-9])chat[\s-]*gpt(?![A-Za-z0-9])", "ChatGPT"),
@@ -170,7 +171,15 @@ def remove_filler_words(text):
 
     def remove_if_unambiguous(match):
         nonlocal removed
-        if match.group().startswith("嗯") and not text[match.end():].strip():
+        prefix = text[:match.start()].rstrip()
+        suffix = text[match.end():].strip()
+        if (
+            match.group().startswith("嗯")
+            and not suffix
+            and (
+                not prefix or re.search(r"[?？:：]\s*$", prefix)
+            )
+        ):
             return match.group()
         removed = True
         return ""
