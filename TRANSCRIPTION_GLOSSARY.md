@@ -37,7 +37,7 @@ Reasoning 名稱可以分成兩套來看：
 
 ## 已納入一般提示詞的相關名詞
 
-目前 `transcription_interpreter.py` 的 `transcription_prompt()` 會先說明 AI／軟體開發情境、略過口語停頓用的「呃／嗯」、不自動換行，以及 `Skill/Skills` 偏好；`PROMPT_TERMS` 只保留近期常講且需要提示 Whisper 拼字的短名詞。較廣的安全拼字修正放在同檔的 `TECH_TERM_CORRECTIONS`。完整執行期規則均以 `transcription_interpreter.py` 為準。
+目前 `transcription_interpreter.py` 的 `transcription_prompt()` 會先說明 AI／軟體開發情境、略過停頓省略號與獨立語氣詞「呃／嗯／噢／哦／喔／哇」、不自動換行，以及 `Skill/Skills` 偏好；`PROMPT_TERMS` 只保留近期常講且需要提示 Whisper 拼字的短名詞。較廣的安全拼字修正放在同檔的 `TECH_TERM_CORRECTIONS`。完整執行期規則均以 `transcription_interpreter.py` 為準。
 
 ## 新增詞彙的格式
 

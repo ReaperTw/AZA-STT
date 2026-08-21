@@ -30,12 +30,14 @@ def normalize_language_mode(mode):
 def transcription_prompt(language_mode):
     if normalize_language_mode(language_mode) == LANGUAGE_SIMPLIFIED:
         description = (
-            "简体中文 AI 与软件开发忠实逐字稿，仅省略口语停顿用的“呃、嗯”，"
+            "简体中文 AI 与软件开发忠实逐字稿，省略停顿省略号与语气词"
+            "“呃、嗯、噢、哦、喔、哇”，"
             "不要换行。常见词: Skill/Skills。专有名词: "
         )
     else:
         description = (
-            "繁體中文 AI 與軟體開發忠實逐字稿，僅省略口語停頓用的「呃、嗯」，"
+            "繁體中文 AI 與軟體開發忠實逐字稿，省略停頓省略號與語氣詞"
+            "「呃、嗯、噢、哦、喔、哇」，"
             "不要換行。常見詞: Skill/Skills。專有名詞: "
         )
     return description + ", ".join(PROMPT_TERMS) + "."
@@ -135,9 +137,17 @@ SENTENCE_PAUSE_SECONDS = 0.80
 MAX_SENTENCE_CHARACTERS = 90
 
 FILLER_WORD_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9\u3400-\u9fff])(?:呃+|嗯+)"
+    r"(?<![A-Za-z0-9\u3400-\u9fff])(?:呃+|嗯+|噢+|哦+|喔+|哇+)"
     r"(?![A-Za-z0-9\u3400-\u9fff])"
     r"(?:\s*[.…,，、;；:：!?！？。]+)*"
+)
+CJK_ELLIPSIS_PATTERN = re.compile(
+    r"(?<=[\u3400-\u9fff])\s*(?:\.{3,}|…+)\s*(?=[\u3400-\u9fff])"
+)
+ELLIPSIS_PATTERN = re.compile(r"\.{3,}|…+")
+URL_PATTERN = re.compile(
+    r"((?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)\S*?)(?=[,.;!?][\u3400-\u9fff]|\s|$)",
+    re.IGNORECASE,
 )
 
 
@@ -145,6 +155,14 @@ def canonicalize_tech_terms(text):
     for pattern, replacement in TECH_TERM_CORRECTIONS:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return text
+
+
+def remove_pause_ellipses(text):
+    pieces = URL_PATTERN.split(text)
+    for index in range(0, len(pieces), 2):
+        pieces[index] = CJK_ELLIPSIS_PATTERN.sub("", pieces[index])
+        pieces[index] = ELLIPSIS_PATTERN.sub(" ", pieces[index])
+    return "".join(pieces)
 
 
 def remove_filler_words(text):
@@ -158,6 +176,7 @@ def remove_filler_words(text):
         return ""
 
     cleaned = FILLER_WORD_PATTERN.sub(remove_if_unambiguous, text)
+    cleaned = remove_pause_ellipses(cleaned)
     if removed:
         cleaned = re.sub(r"[,，、;；:：]\s*$", "", cleaned)
     return cleaned
@@ -318,6 +337,8 @@ def _format_half_width_punctuation_spacing(text):
             continue
 
         if char == "," and previous_char.isdigit() and next_char.isdigit():
+            continue
+        if char == "." and previous_char == ".":
             continue
         if (
             char == "."

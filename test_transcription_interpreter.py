@@ -101,6 +101,33 @@ class TranscriptionInterpreterTests(unittest.TestCase):
 
         self.assertEqual(result.text, "我覺得, 這個可以")
 
+    def test_removes_pause_ellipses_and_standalone_interjections(self):
+        result = TranscriptionInterpreter().interpret(
+            {"text": "我需要想一下 ... 噢，哦，喔，哇！然後繼續…下一句"}
+        )
+
+        self.assertEqual(result.text, "我需要想一下然後繼續下一句")
+
+    def test_rejects_ellipsis_only_transcription(self):
+        result = TranscriptionInterpreter().interpret({"text": "..."})
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.text, "")
+
+    def test_preserves_urls_containing_ellipsis(self):
+        result = TranscriptionInterpreter().interpret(
+            {"text": "路徑 https://example.com/.../file ftp://example.com/.../file"}
+        )
+
+        self.assertEqual(result.text, "路徑 https://example.com/.../file ftp://example.com/.../file")
+
+    def test_removes_ellipsis_immediately_after_url_and_chinese_punctuation(self):
+        result = TranscriptionInterpreter().interpret(
+            {"text": "網址 https://example.com，然後...繼續"}
+        )
+
+        self.assertEqual(result.text, "網址 https://example.com, 然後繼續")
+
     def test_public_interface_preserves_urls_versions_decimals_and_thousands(self):
         result = TranscriptionInterpreter().interpret(
             {
